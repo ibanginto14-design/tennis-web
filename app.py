@@ -5,7 +5,6 @@ import base64
 import secrets
 import hashlib
 import urllib.request
-import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from dataclasses import dataclass
@@ -53,13 +52,11 @@ st.markdown(COMPACT_CSS, unsafe_allow_html=True)
 DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 HIST_DIR = os.path.join(DATA_DIR, "histories")
-CAL_DIR = os.path.join(DATA_DIR, "calendars")  # NEW
 
 
 def ensure_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(HIST_DIR, exist_ok=True)
-    os.makedirs(CAL_DIR, exist_ok=True)  # NEW
 
 
 def safe_user_key(username: str) -> str:
@@ -123,33 +120,6 @@ def save_history_to_disk(user_key: str, matches: list) -> None:
     ensure_dirs()
     path = history_path_for(user_key)
     payload = {"matches": matches}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-# ---------- CALENDAR STORAGE (NEW) ----------
-def calendar_path_for(user_key: str) -> str:
-    ensure_dirs()
-    return os.path.join(CAL_DIR, f"calendar__{user_key}.json")
-
-
-def load_calendar_from_disk(user_key: str) -> list:
-    path = calendar_path_for(user_key)
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        events = obj.get("events", [])
-        return events if isinstance(events, list) else []
-    except Exception:
-        return []
-
-
-def save_calendar_to_disk(user_key: str, events: list) -> None:
-    ensure_dirs()
-    path = calendar_path_for(user_key)
-    payload = {"events": events}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -711,8 +681,6 @@ def ss_init():
         st.session_state.auth_key = None
     if "authed" not in st.session_state:
         st.session_state.authed = False
-    if "calendar_events" not in st.session_state:  # NEW
-        st.session_state.calendar_events = []
 
 
 ss_init()
@@ -757,8 +725,8 @@ def nav_tiles():
             st.session_state.page = "NEWS"
             st.rerun()
     with c5:
-        if st.button("🗓️ Calendario", use_container_width=True):  # NEW
-            st.session_state.page = "CAL"
+        if st.button("🧠 Psico", use_container_width=True):
+            st.session_state.page = "PSICO"
             st.rerun()
 
 
@@ -796,7 +764,6 @@ def auth_block():
                 st.session_state.auth_user = rec.get("display", u.strip() or key)
                 st.session_state.auth_key = key
                 st.session_state.history.matches = load_history_from_disk(key)
-                st.session_state.calendar_events = load_calendar_from_disk(key)  # NEW
                 st.success("Acceso correcto ✅")
                 st.rerun()
             else:
@@ -831,7 +798,6 @@ def auth_block():
             users[key] = rec
             save_users(users)
             save_history_to_disk(key, [])
-            save_calendar_to_disk(key, [])  # NEW
             st.success("Usuario creado ✅ Ya puedes entrar en la pestaña 'Entrar'.")
 
 
@@ -963,6 +929,7 @@ if st.session_state.page == "LIVE":
             sl = st.number_input("Sets Rival", 0, 5, value=int(live.state.sets_opp), step=1)
             gw = st.number_input("Juegos Yo", 0, 50, value=int(live.state.games_me), step=1)
             gl = st.number_input("Juegos Rival", 0, 50, value=int(live.state.games_opp), step=1)
+
             surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURFACES.index(live.surface))
 
             s_left, s_right = st.columns(2, gap="small")
@@ -1079,6 +1046,7 @@ if st.session_state.page == "LIVE":
                             m["surface"] = surface
                             m["date"] = date
                             history.matches[i] = m
+
                             save_history_to_disk(user_key, history.matches)
 
                             st.session_state._edit_open = False
@@ -1236,141 +1204,48 @@ elif st.session_state.page == "NEWS":
 
 
 # ==========================================================
-# PAGE: CALENDAR (NEW)
+# PAGE: PSICO  (FIX: listar TODOS los PDFs por bytes)
 # ==========================================================
 else:
-    title_h("Calendario")
-    small_note("Apunta eventos (privados por usuario) y se guardan aunque recargues la página.")
+    title_h("Psico")
+    small_note("Material en PDF (visible y descargable).")
 
-    events = st.session_state.calendar_events
-
-    st.divider()
-    st.subheader("Añadir evento", anchor=False)
-
-    c1, c2 = st.columns([1.2, 0.8], gap="small")
-    with c1:
-        ev_title = st.text_input("Título", value="", placeholder="Ej: Torneo, sesión psico, entrenamiento, etc.")
-    with c2:
-        ev_type = st.selectbox("Tipo", ["Torneo", "Entrenamiento", "Sesión", "Viaje", "Otro"], index=0)
-
-    c3, c4 = st.columns(2, gap="small")
-    with c3:
-        ev_date = st.date_input("Fecha", value=datetime.now().date())
-    with c4:
-        ev_time = st.time_input("Hora", value=datetime.now().time().replace(second=0, microsecond=0))
-
-    ev_notes = st.text_area("Notas (opcional)", value="", placeholder="Detalles, lugar, objetivo, etc.", height=90)
-
-    cA, cB = st.columns(2, gap="small")
-    with cA:
-        if st.button("➕ Guardar evento", use_container_width=True):
-            if not ev_title.strip():
-                st.error("Pon un título al evento.")
-            else:
-                ev = {
-                    "id": f"e_{datetime.now().timestamp()}",
-                    "title": ev_title.strip(),
-                    "type": ev_type,
-                    "date": ev_date.isoformat(),
-                    "time": ev_time.strftime("%H:%M"),
-                    "notes": ev_notes.strip(),
-                    "created": datetime.now().isoformat(timespec="seconds"),
-                }
-                events.append(ev)
-                # ordenar por fecha/hora
-                def _key(x):
-                    return (x.get("date", ""), x.get("time", "00:00"))
-                events.sort(key=_key)
-                st.session_state.calendar_events = events
-                save_calendar_to_disk(user_key, events)
-                st.success("Evento guardado ✅")
-                st.rerun()
-
-    with cB:
-        if st.button("🔄 Recargar desde disco", use_container_width=True):
-            st.session_state.calendar_events = load_calendar_from_disk(user_key)
-            st.success("Calendario recargado ✅")
-            st.rerun()
+    psico_dir = Path("psico_pdfs")
+    pdfs = []
+    if psico_dir.exists() and psico_dir.is_dir():
+        pdfs = sorted([p for p in psico_dir.glob("*.pdf") if p.is_file()], key=lambda x: x.name.lower())
 
     st.divider()
-    st.subheader("Tus eventos", anchor=False)
-
-    if not events:
-        st.info("Aún no tienes eventos.")
+    if not pdfs:
+        st.info("No se han encontrado PDFs en la carpeta `psico_pdfs/`. Sube los archivos al repo y redeploy.")
     else:
-        for idx, ev in enumerate(events):
-            eid = ev.get("id", f"idx_{idx}")
-            title = ev.get("title", "Evento")
-            typ = ev.get("type", "—")
-            date = ev.get("date", "")
-            time = ev.get("time", "")
-            notes = ev.get("notes", "")
-
-            with st.expander(f"🗓️ {date} {time} · {typ} · {title}", expanded=False):
-                if notes:
-                    small_note(notes)
-
-                d1, d2 = st.columns(2, gap="small")
-                with d1:
-                    if st.button("🗑️ Borrar", use_container_width=True, key=f"cal_del_{eid}"):
-                        # borrar por id
-                        st.session_state.calendar_events = [x for x in st.session_state.calendar_events if x.get("id") != eid]
-                        save_calendar_to_disk(user_key, st.session_state.calendar_events)
-                        st.success("Evento borrado ✅")
-                        st.rerun()
-                with d2:
-                    # edición simple: reescribe campos y guarda
-                    if st.button("✏️ Editar", use_container_width=True, key=f"cal_edit_btn_{eid}"):
-                        st.session_state._cal_edit_id = eid
-                        st.rerun()
-
-        # bloque de edición (fuera del loop para evitar duplicados)
-        edit_id = st.session_state.get("_cal_edit_id", None)
-        if edit_id:
-            ev = next((x for x in st.session_state.calendar_events if x.get("id") == edit_id), None)
-            if ev is None:
-                st.session_state._cal_edit_id = None
-            else:
-                st.divider()
-                st.subheader("Editar evento", anchor=False)
-
-                et = st.text_input("Título (editar)", value=ev.get("title", ""), key=f"cal_e_title_{edit_id}")
-                etype = st.selectbox("Tipo (editar)", ["Torneo", "Entrenamiento", "Sesión", "Viaje", "Otro"],
-                                     index=max(0, ["Torneo", "Entrenamiento", "Sesión", "Viaje", "Otro"].index(ev.get("type", "Otro"))),
-                                     key=f"cal_e_type_{edit_id}")
-                edate = st.date_input("Fecha (editar)", value=datetime.fromisoformat(ev.get("date")).date() if ev.get("date") else datetime.now().date(),
-                                      key=f"cal_e_date_{edit_id}")
-                # hora
+        for p in pdfs:
+            # clave estable y segura aunque haya tildes
+            k = hashlib.md5(p.name.encode("utf-8")).hexdigest()[:10]
+            with st.expander(f"📄 {p.name}", expanded=False):
                 try:
-                    hh, mm = (ev.get("time", "00:00").split(":") + ["0"])[:2]
-                    etime_default = datetime.now().time().replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
-                except Exception:
-                    etime_default = datetime.now().time().replace(second=0, microsecond=0)
-                etime = st.time_input("Hora (editar)", value=etime_default, key=f"cal_e_time_{edit_id}")
-                enotes = st.text_area("Notas (editar)", value=ev.get("notes", ""), height=90, key=f"cal_e_notes_{edit_id}")
+                    data = p.read_bytes()
+                except Exception as e:
+                    st.error(f"No se pudo leer el PDF: {e}")
+                    continue
 
-                b1, b2 = st.columns(2, gap="small")
-                with b1:
-                    if st.button("Cancelar edición", use_container_width=True, key=f"cal_e_cancel_{edit_id}"):
-                        st.session_state._cal_edit_id = None
-                        st.rerun()
-                with b2:
-                    if st.button("Guardar cambios", use_container_width=True, key=f"cal_e_save_{edit_id}"):
-                        if not et.strip():
-                            st.error("El título no puede estar vacío.")
-                        else:
-                            ev["title"] = et.strip()
-                            ev["type"] = etype
-                            ev["date"] = edate.isoformat()
-                            ev["time"] = etime.strftime("%H:%M")
-                            ev["notes"] = enotes.strip()
+                st.download_button(
+                    "⬇️ Descargar PDF",
+                    data=data,
+                    file_name=p.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"psico_dl_{k}",
+                )
 
-                            # reordenar
-                            def _key(x):
-                                return (x.get("date", ""), x.get("time", "00:00"))
-                            st.session_state.calendar_events.sort(key=_key)
-
-                            save_calendar_to_disk(user_key, st.session_state.calendar_events)
-                            st.session_state._cal_edit_id = None
-                            st.success("Evento actualizado ✅")
-                            st.rerun()
+                # visor embebido (data URI) -> no depende de rutas ni de caracteres raros
+                b64 = base64.b64encode(data).decode("utf-8")
+                html = f"""
+                <iframe
+                    src="data:application/pdf;base64,{b64}"
+                    width="100%"
+                    height="650"
+                    style="border: 1px solid rgba(0,0,0,0.08); border-radius: 10px;"
+                ></iframe>
+                """
+                st.components.v1.html(html, height=680, scrolling=False)
