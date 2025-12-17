@@ -15,44 +15,51 @@ st.set_page_config(page_title="TennisStats", page_icon="🎾", layout="centered"
 COMPACT_CSS = """
 <style>
 /* Reduce márgenes generales */
-.block-container {padding-top: 0.8rem; padding-bottom: 1.2rem; max-width: 900px;}
+.block-container {padding-top: 0.6rem; padding-bottom: 1.2rem; max-width: 900px;}
 /* Reduce espacios entre elementos */
 div[data-testid="stVerticalBlock"] > div {gap: 0.6rem;}
 /* Reduce espacio del header de Streamlit */
-header[data-testid="stHeader"] {height: 0.6rem;}
-/* Botones un poco más compactos */
+header[data-testid="stHeader"] {height: 0.5rem;}
+/* Botones compactos */
 .stButton>button {padding: 0.45rem 0.8rem; border-radius: 12px;}
 /* Inputs compactos */
 div[data-baseweb="input"] input {padding-top: 0.45rem; padding-bottom: 0.45rem;}
-/* Chips simulados */
 .small-note {color: rgba(0,0,0,0.55); font-size: 0.92rem; line-height: 1.25rem;}
 .kpi {font-size: 1.05rem; font-weight: 700;}
 .badge {display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; background: #f1f3f5; margin-right: .35rem; margin-bottom: .35rem;}
 hr {margin: 0.55rem 0;}
 
 /* ======================================================
-   FIX: Tabs (LIVE / Analysis / Stats) invisibles en móvil
+   NUEVO: NAV superior (en vez de st.tabs) SIEMPRE visible
    ====================================================== */
-div[data-baseweb="tab-list"] {
-  gap: 0.4rem !important;
-  padding-bottom: 0.2rem !important;
+div[data-testid="stRadio"]{
+  position: sticky;
+  top: 0;
+  z-index: 999;
+  background: white;
+  padding: 0.4rem 0 0.25rem 0;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
 }
-div[data-baseweb="tab"] button {
-  color: #111 !important;
-  font-weight: 800 !important;
-  font-size: 1.02rem !important;
-  background: #f3f4f6 !important;
-  border-radius: 999px !important;
-  padding: 0.42rem 0.75rem !important;
-  border: 1px solid rgba(0,0,0,0.08) !important;
+
+/* Hace que el radio horizontal parezca “tabs” */
+div[data-testid="stRadio"] > div {
+  gap: 0.45rem !important;
 }
-div[data-baseweb="tab"][aria-selected="true"] button {
+div[data-testid="stRadio"] label {
+  border: 1px solid rgba(0,0,0,0.10);
+  background: #f3f4f6;
+  padding: 0.38rem 0.7rem;
+  border-radius: 999px;
+  font-weight: 900;
+  color: #111;
+}
+div[data-testid="stRadio"] label[data-baseweb="radio"]{
+  margin: 0 !important;
+}
+div[data-testid="stRadio"] input:checked + div {
   background: #111 !important;
   color: #fff !important;
-  border-color: #111 !important;
-}
-div[data-baseweb="tab-highlight"] {
-  background: transparent !important; /* evita subrayado raro */
+  border-radius: 999px !important;
 }
 </style>
 """
@@ -490,6 +497,8 @@ def ss_init():
         st.session_state.history = MatchHistory()
     if "finish" not in st.session_state:
         st.session_state.finish = None
+    if "page" not in st.session_state:
+        st.session_state.page = "🎾 LIVE"
 
 
 ss_init()
@@ -517,14 +526,21 @@ def title_h(txt: str):
 
 
 # ==========================================================
-# NAV (TABS)
+# NAV SUPERIOR (reemplaza tabs)
 # ==========================================================
-tabs = st.tabs(["🎾 LIVE", "📈 Analysis", "📊 Stats"])
+page = st.radio(
+    "",
+    ["🎾 LIVE", "📈 Analysis", "📊 Stats"],
+    horizontal=True,
+    key="page",
+    label_visibility="collapsed",
+)
+
 
 # ==========================================================
-# TAB 1: LIVE
+# PÁGINA 1: LIVE
 # ==========================================================
-with tabs[0]:
+if page == "🎾 LIVE":
     title_h("LIVE MATCH")
 
     colA, colB = st.columns([1.15, 1.0], gap="small")
@@ -607,7 +623,9 @@ with tabs[0]:
             live.undo()
             st.rerun()
     with a2:
-        st.button("📈 Ir a Analysis", use_container_width=True, disabled=True)
+        if st.button("📈 Ir a Analysis", use_container_width=True):
+            st.session_state.page = "📈 Analysis"
+            st.rerun()
     with a3:
         if st.button("🏁 Finalizar", use_container_width=True):
             st.session_state._open_finish = True
@@ -753,10 +771,14 @@ with tabs[0]:
 
 
 # ==========================================================
-# TAB 2: ANALYSIS
+# PÁGINA 2: ANALYSIS
 # ==========================================================
-with tabs[1]:
+elif page == "📈 Analysis":
     title_h("Analysis")
+
+    if st.button("⬅️ Volver a LIVE", use_container_width=True):
+        st.session_state.page = "🎾 LIVE"
+        st.rerun()
 
     p_point = live.estimate_point_win_prob()
     p_match = live.match_win_prob() * 100.0
@@ -779,10 +801,14 @@ with tabs[1]:
 
 
 # ==========================================================
-# TAB 3: STATS
+# PÁGINA 3: STATS
 # ==========================================================
-with tabs[2]:
+else:
     title_h("Stats")
+
+    if st.button("⬅️ Volver a LIVE", use_container_width=True):
+        st.session_state.page = "🎾 LIVE"
+        st.rerun()
 
     colF1, colF2 = st.columns([1.1, 0.9], gap="small")
     with colF1:
