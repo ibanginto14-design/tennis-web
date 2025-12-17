@@ -31,7 +31,7 @@ div[data-baseweb="input"] input {padding-top: 0.45rem; padding-bottom: 0.45rem;}
 hr {margin: 0.55rem 0;}
 
 /* ======================================================
-   FIX: Tabs (LIVE / Analysis / Stats) visibles en móvil
+   FIX: Tabs (LIVE / Analysis / Stats) invisibles en móvil
    ====================================================== */
 div[data-baseweb="tab-list"] {
   gap: 0.4rem !important;
@@ -52,7 +52,7 @@ div[data-baseweb="tab"][aria-selected="true"] button {
   border-color: #111 !important;
 }
 div[data-baseweb="tab-highlight"] {
-  background: transparent !important;
+  background: transparent !important; /* evita subrayado raro */
 }
 </style>
 """
@@ -242,7 +242,9 @@ class LiveMatch:
         p = self.estimate_point_win_prob()
         p_r = round(p, 3)
         st_ = self.state
-        return _prob_match_bo3(p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak)
+        return _prob_match_bo3(
+            p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak
+        )
 
     def win_prob_series(self):
         probs = []
@@ -481,28 +483,25 @@ class MatchHistory:
 
 
 # ==========================================================
-# NUEVO: CALENDARIO / AGENDA DE EVENTOS
+# CALENDARIO (EVENTOS)
 # ==========================================================
-class CalendarEvents:
+class CalendarStore:
     def __init__(self):
-        self.events = []
+        self.events = []  # cada evento: {id,title,date,time,location,notes,created_at}
 
     def add(self, e: dict):
         self.events.append(e)
 
-    def sort_events(self):
-        # Ordena por fecha/hora si hay formato correcto; si no, al final.
-        def keyfn(ev):
-            dt = ev.get("datetime", "")
-            try:
-                return datetime.fromisoformat(dt)
-            except Exception:
-                return datetime.max
-        self.events.sort(key=keyfn)
+    def delete(self, idx: int):
+        if 0 <= idx < len(self.events):
+            self.events.pop(idx)
 
-    def upcoming(self):
-        self.sort_events()
-        return self.events
+    def sort_events(self):
+        def keyf(ev):
+            d = ev.get("date") or "9999-12-31"
+            t = ev.get("time") or "23:59"
+            return (d, t)
+        self.events.sort(key=keyf)
 
 
 # ==========================================================
@@ -515,16 +514,14 @@ def ss_init():
         st.session_state.history = MatchHistory()
     if "finish" not in st.session_state:
         st.session_state.finish = None
-
-    # NUEVO: calendario
     if "calendar" not in st.session_state:
-        st.session_state.calendar = CalendarEvents()
+        st.session_state.calendar = CalendarStore()
 
 
 ss_init()
 live: LiveMatch = st.session_state.live
 history: MatchHistory = st.session_state.history
-calendar: CalendarEvents = st.session_state.calendar
+calendar: CalendarStore = st.session_state.calendar
 
 SURFACES = ("Tierra batida", "Pista rápida", "Hierba", "Indoor")
 FINISH_ITEMS = [
@@ -549,7 +546,7 @@ def title_h(txt: str):
 # ==========================================================
 # NAV (TABS)
 # ==========================================================
-tabs = st.tabs(["🎾 LIVE", "📈 Analysis", "📊 Stats", "📅 Calendario"])
+tabs = st.tabs(["🎾 LIVE", "📈 Analysis", "📊 Stats", "🗓️ Calendario"])
 
 
 # ==========================================================
@@ -691,13 +688,13 @@ with tabs[0]:
 
         for idx, m in enumerate(matches):
             real_i = len(history.matches) - 1 - idx
-            date_s = m.get("date", "")
+            date_ = m.get("date", "")
             surf = m.get("surface", "—")
             res = "✅ W" if m.get("won_match") else "❌ L"
             score = f"{m.get('sets_w',0)}-{m.get('sets_l',0)} sets · {m.get('games_w',0)}-{m.get('games_l',0)} juegos"
             pts = f"{m.get('points_won',0)}/{m.get('points_total',0)} pts ({m.get('points_pct',0):.0f}%)"
 
-            with st.expander(f"{res} · {score} · {surf} · {date_s}", expanded=False):
+            with st.expander(f"{res} · {score} · {surf} · {date_}", expanded=False):
                 st.write(f"**{score}**")
                 small_note(f"{pts} · Presión: {m.get('pressure_won',0)}/{m.get('pressure_total',0)} ({m.get('pressure_pct',0):.0f}%)")
 
@@ -770,13 +767,13 @@ with tabs[0]:
     if up is not None:
         try:
             obj = json.loads(up.read().decode("utf-8"))
-            matches = obj.get("matches", [])
-            if not isinstance(matches, list):
+            matches_in = obj.get("matches", [])
+            if not isinstance(matches_in, list):
                 raise ValueError("Formato incorrecto: 'matches' debe ser una lista.")
-            for mm in matches:
+            for mm in matches_in:
                 if "id" not in mm:
                     mm["id"] = f"m_{datetime.now().timestamp()}"
-            history.matches = matches
+            history.matches = matches_in
             st.success("Historial importado ✅")
             st.rerun()
         except Exception as e:
@@ -874,155 +871,128 @@ with tabs[2]:
 
 
 # ==========================================================
-# TAB 4: CALENDARIO (NUEVO)
+# TAB 4: CALENDARIO
 # ==========================================================
 with tabs[3]:
     title_h("Calendario")
 
-    small_note("Apunta entrenos, partidos, torneos, recordatorios, etc. Puedes editar/borrar y exportar/importar en JSON.")
+    small_note("Apunta tus eventos (entrenos, partidos, torneos, fisio, etc.).")
 
-    st.subheader("Añadir evento", anchor=False)
+    with st.expander("➕ Añadir evento", expanded=True):
+        c1, c2 = st.columns([1.1, 0.9], gap="small")
+        with c1:
+            ev_title = st.text_input("Título", placeholder="Ej: Entreno / Partido / Torneo", key="cal_title")
+            ev_loc = st.text_input("Lugar (opcional)", placeholder="Ej: Pinter / Club / Ciudad", key="cal_loc")
+        with c2:
+            ev_date = st.date_input("Fecha", value=date.today(), key="cal_date")
+            ev_time = st.time_input("Hora (opcional)", value=time(18, 0), key="cal_time")
 
-    col1, col2 = st.columns(2, gap="small")
-    with col1:
-        ev_title = st.text_input("Título", placeholder="Ej: Entreno servicio / Partido liga", key="cal_title")
-        ev_date = st.date_input("Fecha", value=date.today(), key="cal_date")
-    with col2:
-        ev_time = st.time_input("Hora", value=time(18, 0), key="cal_time")
-        ev_type = st.selectbox("Tipo", ["Entreno", "Partido", "Torneo", "Fisio", "Otro"], index=0, key="cal_type")
+        ev_notes = st.text_area("Notas (opcional)", placeholder="Objetivo, rival, pista, recordatorios…", key="cal_notes")
 
-    ev_place = st.text_input("Lugar (opcional)", placeholder="Ej: Pinter / Club / Pista 3", key="cal_place")
-    ev_notes = st.text_area("Notas (opcional)", placeholder="Plan, objetivos, detalles…", height=90, key="cal_notes")
-
-    addL, addR = st.columns([1, 1], gap="small")
-    with addL:
-        if st.button("➕ Guardar evento", use_container_width=True):
-            dt = datetime.combine(ev_date, ev_time).isoformat(timespec="minutes")
+        if st.button("Guardar evento", use_container_width=True, key="cal_add"):
+            eid = f"e_{datetime.now().timestamp()}"
             calendar.add({
-                "id": f"e_{datetime.now().timestamp()}",
-                "title": ev_title.strip() or "(Sin título)",
-                "type": ev_type,
-                "datetime": dt,
-                "place": ev_place.strip(),
-                "notes": ev_notes.strip(),
+                "id": eid,
+                "title": (ev_title or "Evento").strip(),
+                "date": ev_date.isoformat(),
+                "time": ev_time.strftime("%H:%M") if isinstance(ev_time, time) else "",
+                "location": (ev_loc or "").strip(),
+                "notes": (ev_notes or "").strip(),
                 "created_at": datetime.now().isoformat(timespec="seconds"),
             })
             calendar.sort_events()
             st.success("Evento guardado ✅")
-            # limpia inputs “suave”
-            st.session_state.cal_title = ""
-            st.session_state.cal_place = ""
-            st.session_state.cal_notes = ""
-            st.rerun()
-
-    with addR:
-        if st.button("🧹 Borrar formulario", use_container_width=True):
-            st.session_state.cal_title = ""
-            st.session_state.cal_place = ""
-            st.session_state.cal_notes = ""
             st.rerun()
 
     st.divider()
-
     st.subheader("Próximos eventos", anchor=False)
 
     if not calendar.events:
         st.info("Aún no hay eventos.")
     else:
-        events = calendar.upcoming()
+        calendar.sort_events()
+        for idx, ev in enumerate(calendar.events):
+            ev_title = ev.get("title", "Evento")
+            ev_date = ev.get("date", "")
+            ev_time = ev.get("time", "")
+            ev_loc = ev.get("location", "")
+            header = f"{ev_date} {ev_time}".strip()
+            if ev_loc:
+                header += f" · {ev_loc}"
+            with st.expander(f"🗓️ {ev_title} · {header}", expanded=False):
+                if ev_loc:
+                    st.write(f"**Lugar:** {ev_loc}")
+                st.write(f"**Fecha:** {ev_date}" + (f" · **Hora:** {ev_time}" if ev_time else ""))
+                if ev.get("notes"):
+                    small_note(ev["notes"])
 
-        # Lista con edición/borrado
-        for idx, ev in enumerate(events):
-            real_i = idx  # ya están ordenados en el propio array
-
-            dt_txt = ev.get("datetime", "")
-            try:
-                dt_obj = datetime.fromisoformat(dt_txt)
-                nice_dt = dt_obj.strftime("%d/%m/%Y %H:%M")
-            except Exception:
-                nice_dt = dt_txt or "—"
-
-            head = f"📌 {nice_dt} · {ev.get('type','')} · {ev.get('title','')}"
-            with st.expander(head, expanded=False):
-                place = ev.get("place", "")
-                notes = ev.get("notes", "")
-                if place:
-                    st.write(f"**Lugar:** {place}")
-                if notes:
-                    st.write(f"**Notas:** {notes}")
-
-                b1, b2 = st.columns(2, gap="small")
-                with b1:
-                    if st.button("✏️ Editar", key=f"cal_edit_{ev.get('id', real_i)}", use_container_width=True):
-                        st.session_state._cal_edit_index = real_i
+                e1, e2 = st.columns(2, gap="small")
+                with e1:
+                    if st.button("✏️ Editar", use_container_width=True, key=f"cal_edit_{ev.get('id', idx)}"):
                         st.session_state._cal_edit_open = True
+                        st.session_state._cal_edit_idx = idx
                         st.rerun()
-                with b2:
-                    if st.button("🗑️ Borrar", key=f"cal_del_{ev.get('id', real_i)}", use_container_width=True):
-                        calendar.events.pop(real_i)
-                        st.success("Evento borrado.")
+                with e2:
+                    if st.button("🗑️ Borrar", use_container_width=True, key=f"cal_del_{ev.get('id', idx)}"):
+                        calendar.delete(idx)
+                        st.success("Evento borrado ✅")
                         st.rerun()
 
-        # Editor
         if st.session_state.get("_cal_edit_open", False):
-            i = st.session_state.get("_cal_edit_index", None)
+            i = st.session_state.get("_cal_edit_idx", None)
             if i is not None and 0 <= i < len(calendar.events):
                 ev = calendar.events[i]
                 with st.expander("✏️ Editar evento", expanded=True):
-                    st.write("Modifica y guarda.")
+                    t_ = st.text_input("Título", value=str(ev.get("title", "")), key="cal_edit_title")
+                    loc_ = st.text_input("Lugar (opcional)", value=str(ev.get("location", "")), key="cal_edit_loc")
 
-                    # parse datetime
+                    # parse date/time
                     try:
-                        dt_obj = datetime.fromisoformat(ev.get("datetime", ""))
-                        d0 = dt_obj.date()
-                        t0 = dt_obj.time().replace(second=0, microsecond=0)
+                        d0 = date.fromisoformat(ev.get("date", date.today().isoformat()))
                     except Exception:
                         d0 = date.today()
+                    try:
+                        tm = ev.get("time", "")
+                        if tm:
+                            hh, mm = tm.split(":")
+                            t0 = time(int(hh), int(mm))
+                        else:
+                            t0 = time(18, 0)
+                    except Exception:
                         t0 = time(18, 0)
 
-                    cA, cB = st.columns(2, gap="small")
-                    with cA:
-                        t_title = st.text_input("Título", value=str(ev.get("title", "")))
-                        t_date = st.date_input("Fecha", value=d0)
-                    with cB:
-                        t_time = st.time_input("Hora", value=t0)
-                        t_type = st.selectbox("Tipo", ["Entreno", "Partido", "Torneo", "Fisio", "Otro"],
-                                              index=["Entreno","Partido","Torneo","Fisio","Otro"].index(ev.get("type","Otro"))
-                                              if ev.get("type","Otro") in ["Entreno","Partido","Torneo","Fisio","Otro"] else 4)
+                    d_ = st.date_input("Fecha", value=d0, key="cal_edit_date")
+                    t_in = st.time_input("Hora (opcional)", value=t0, key="cal_edit_time")
+                    notes_ = st.text_area("Notas (opcional)", value=str(ev.get("notes", "")), key="cal_edit_notes")
 
-                    t_place = st.text_input("Lugar (opcional)", value=str(ev.get("place", "")))
-                    t_notes = st.text_area("Notas (opcional)", value=str(ev.get("notes", "")), height=90)
-
-                    xL, xR = st.columns(2, gap="small")
-                    with xL:
-                        if st.button("Cancelar", use_container_width=True):
+                    bL, bR = st.columns(2, gap="small")
+                    with bL:
+                        if st.button("Cancelar edición", use_container_width=True, key="cal_edit_cancel"):
                             st.session_state._cal_edit_open = False
-                            st.session_state._cal_edit_index = None
+                            st.session_state._cal_edit_idx = None
                             st.rerun()
-                    with xR:
-                        if st.button("Guardar cambios", use_container_width=True):
-                            new_dt = datetime.combine(t_date, t_time).isoformat(timespec="minutes")
-                            ev["title"] = t_title.strip() or "(Sin título)"
-                            ev["type"] = t_type
-                            ev["datetime"] = new_dt
-                            ev["place"] = t_place.strip()
-                            ev["notes"] = t_notes.strip()
+                    with bR:
+                        if st.button("Guardar cambios", use_container_width=True, key="cal_edit_save"):
+                            ev["title"] = (t_ or "Evento").strip()
+                            ev["location"] = (loc_ or "").strip()
+                            ev["date"] = d_.isoformat()
+                            ev["time"] = t_in.strftime("%H:%M") if isinstance(t_in, time) else ""
+                            ev["notes"] = (notes_ or "").strip()
                             calendar.events[i] = ev
                             calendar.sort_events()
                             st.session_state._cal_edit_open = False
-                            st.session_state._cal_edit_index = None
+                            st.session_state._cal_edit_idx = None
                             st.success("Cambios guardados ✅")
                             st.rerun()
 
     st.divider()
+    st.subheader("Exportar / Importar calendario", anchor=False)
 
-    st.subheader("Exportar / Importar", anchor=False)
-
-    cal_export_obj = {"events": calendar.events}
-    cal_export_json = json.dumps(cal_export_obj, ensure_ascii=False, indent=2).encode("utf-8")
+    cal_obj = {"events": calendar.events}
+    cal_json = json.dumps(cal_obj, ensure_ascii=False, indent=2).encode("utf-8")
     st.download_button(
         "⬇️ Descargar calendario (JSON)",
-        data=cal_export_json,
+        data=cal_json,
         file_name="tennis_calendar.json",
         mime="application/json",
         use_container_width=True,
@@ -1038,6 +1008,10 @@ with tabs[3]:
             for e in evs:
                 if "id" not in e:
                     e["id"] = f"e_{datetime.now().timestamp()}"
+                if "date" not in e:
+                    e["date"] = date.today().isoformat()
+                if "title" not in e:
+                    e["title"] = "Evento"
             calendar.events = evs
             calendar.sort_events()
             st.success("Calendario importado ✅")
