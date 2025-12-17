@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from copy import deepcopy
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 
 import streamlit as st
 
@@ -59,6 +60,47 @@ h2, h3 {margin-top: 0.35rem !important;}
 </style>
 """
 st.markdown(COMPACT_CSS, unsafe_allow_html=True)
+
+
+# ==========================================================
+# PERSISTENCIA (historial en disco)
+# ==========================================================
+HISTORY_FILE = Path("history_store.json")
+
+
+def _sanitize_matches(matches):
+    """Asegura que sea una lista de dicts y que cada partido tenga id."""
+    if not isinstance(matches, list):
+        return []
+    out = []
+    for mm in matches:
+        if not isinstance(mm, dict):
+            continue
+        if "id" not in mm:
+            mm["id"] = f"m_{datetime.now().timestamp()}"
+        out.append(mm)
+    return out
+
+
+def load_history_from_disk():
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        obj = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        matches = obj.get("matches", [])
+        return _sanitize_matches(matches)
+    except Exception:
+        # si se corrompe el archivo, no rompemos la app
+        return []
+
+
+def save_history_to_disk(matches):
+    try:
+        payload = {"matches": _sanitize_matches(matches)}
+        HISTORY_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        # no hacemos st.error aquí para no ensuciar la UI continuamente
+        pass
 
 
 # ==========================================================
@@ -489,16 +531,17 @@ class MatchHistory:
 
 
 # ==========================================================
-# SESSION STATE INIT
+# SESSION STATE INIT (con carga persistente)
 # ==========================================================
 def ss_init():
     if "live" not in st.session_state:
         st.session_state.live = LiveMatch()
     if "history" not in st.session_state:
         st.session_state.history = MatchHistory()
+        # 👇 CARGA PERSISTENTE DEL HISTORIAL
+        st.session_state.history.matches = load_history_from_disk()
     if "finish" not in st.session_state:
         st.session_state.finish = None
-    # NUEVO: página seleccionada (para sustituir tabs)
     if "page" not in st.session_state:
         st.session_state.page = "LIVE"
 
@@ -540,7 +583,7 @@ def nav_boxes():
     def nav_btn(col, key_page: str, label: str):
         cls = "nav-card selected" if st.session_state.page == key_page else "nav-card"
         with col:
-            st.markdown(f"<div class='{cls}'>", unsafe_allow_html=True)
+            st.markdown(f"<div class='{cls} nav-card'>", unsafe_allow_html=True)
             if st.button(label, use_container_width=True, key=f"nav_{key_page}"):
                 st.session_state.page = key_page
                 st.rerun()
@@ -676,6 +719,8 @@ def render_live():
                         "surface": surf_save,
                         **report,
                     })
+                    # 👇 GUARDA EN DISCO
+                    save_history_to_disk(history.matches)
 
                     live.surface = surf_save
                     live.reset()
@@ -719,6 +764,8 @@ def render_live():
                 with e2:
                     if st.button("🗑️ Borrar", key=f"del_btn_{m.get('id',real_i)}", use_container_width=True):
                         history.matches.pop(real_i)
+                        # 👇 GUARDA EN DISCO
+                        save_history_to_disk(history.matches)
                         st.success("Partido borrado.")
                         st.rerun()
 
@@ -756,6 +803,8 @@ def render_live():
                             m["surface"] = surface
                             m["date"] = date
                             history.matches[i] = m
+                            # 👇 GUARDA EN DISCO
+                            save_history_to_disk(history.matches)
                             st.session_state._edit_open = False
                             st.session_state._edit_index = None
                             st.success("Cambios guardados ✅")
@@ -778,10 +827,10 @@ def render_live():
             matches = obj.get("matches", [])
             if not isinstance(matches, list):
                 raise ValueError("Formato incorrecto: 'matches' debe ser una lista.")
-            for mm in matches:
-                if "id" not in mm:
-                    mm["id"] = f"m_{datetime.now().timestamp()}"
+            matches = _sanitize_matches(matches)
             history.matches = matches
+            # 👇 GUARDA EN DISCO
+            save_history_to_disk(history.matches)
             st.success("Historial importado ✅")
             st.rerun()
         except Exception as e:
