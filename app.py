@@ -8,7 +8,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, date, time
 from functools import lru_cache
 
 import streamlit as st
@@ -51,11 +51,13 @@ st.markdown(COMPACT_CSS, unsafe_allow_html=True)
 DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 HIST_DIR = os.path.join(DATA_DIR, "histories")
+CAL_DIR = os.path.join(DATA_DIR, "calendars")
 
 
 def ensure_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(HIST_DIR, exist_ok=True)
+    os.makedirs(CAL_DIR, exist_ok=True)
 
 
 def safe_user_key(username: str) -> str:
@@ -123,6 +125,33 @@ def save_history_to_disk(user_key: str, matches: list) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
+# --------- CALENDARIO (por usuario) ----------
+def calendar_path_for(user_key: str) -> str:
+    ensure_dirs()
+    return os.path.join(CAL_DIR, f"calendar__{user_key}.json")
+
+
+def load_calendar_from_disk(user_key: str) -> list:
+    path = calendar_path_for(user_key)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        events = obj.get("events", [])
+        return events if isinstance(events, list) else []
+    except Exception:
+        return []
+
+
+def save_calendar_to_disk(user_key: str, events: list) -> None:
+    ensure_dirs()
+    path = calendar_path_for(user_key)
+    payload = {"events": events}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
 # ==========================================================
 # NOTICIAS (RSS)
 # ==========================================================
@@ -181,17 +210,17 @@ def fetch_tennis_news(max_items: int = 15):
                 for entry in root.findall("a:entry", ns):
                     title = _first_text(entry, ["{http://www.w3.org/2005/Atom}title"])
                     link = _attr(entry, "{http://www.w3.org/2005/Atom}link", "href")
-                    pub = _first_text(entry, ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"])
+                    pub = _first_text(
+                        entry,
+                        ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"],
+                    )
                     if title and link:
                         items.append(
                             {"source": source_name, "title": title, "link": link, "published": pub}
                         )
         except Exception:
-            # si una fuente falla, seguimos con las demás
             continue
 
-    # sin ordenar por fecha (formatos variados); prioriza variedad y recencia típica de RSS
-    # elimina duplicados por link
     seen = set()
     uniq = []
     for it in items:
@@ -720,6 +749,8 @@ def ss_init():
         st.session_state.auth_key = None
     if "authed" not in st.session_state:
         st.session_state.authed = False
+    if "calendar_events" not in st.session_state:
+        st.session_state.calendar_events = []
 
 
 ss_init()
@@ -746,7 +777,7 @@ def title_h(txt: str):
 
 def nav_tiles():
     st.markdown("<div class='navwrap'><div class='navtitle'>Página</div></div>", unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4, gap="small")
+    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
     with c1:
         if st.button("🎾 LIVE", use_container_width=True):
             st.session_state.page = "LIVE"
@@ -762,6 +793,10 @@ def nav_tiles():
     with c4:
         if st.button("📰 Noticias", use_container_width=True):
             st.session_state.page = "NEWS"
+            st.rerun()
+    with c5:
+        if st.button("🗓️ Calendario", use_container_width=True):
+            st.session_state.page = "CALENDAR"
             st.rerun()
 
 
@@ -799,6 +834,7 @@ def auth_block():
                 st.session_state.auth_user = rec.get("display", u.strip() or key)
                 st.session_state.auth_key = key
                 st.session_state.history.matches = load_history_from_disk(key)
+                st.session_state.calendar_events = load_calendar_from_disk(key)
                 st.success("Acceso correcto ✅")
                 st.rerun()
             else:
@@ -833,6 +869,7 @@ def auth_block():
             users[key] = rec
             save_users(users)
             save_history_to_disk(key, [])
+            save_calendar_to_disk(key, [])
             st.success("Usuario creado ✅ Ya puedes entrar en la pestaña 'Entrar'.")
 
 
@@ -858,6 +895,7 @@ with topR:
         st.session_state.auth_key = None
         st.session_state.page = "LIVE"
         st.session_state.finish = None
+        st.session_state.calendar_events = []
         st.rerun()
 
 nav_tiles()
@@ -1007,13 +1045,13 @@ if st.session_state.page == "LIVE":
         matches = list(reversed(history.matches))
         for idx, m in enumerate(matches):
             real_i = len(history.matches) - 1 - idx
-            date = m.get("date", "")
+            date_ = m.get("date", "")
             surf = m.get("surface", "—")
             res = "✅ W" if m.get("won_match") else "❌ L"
             score = f"{m.get('sets_w',0)}-{m.get('sets_l',0)} sets · {m.get('games_w',0)}-{m.get('games_l',0)} juegos"
             pts = f"{m.get('points_won',0)}/{m.get('points_total',0)} pts ({m.get('points_pct',0):.0f}%)"
 
-            with st.expander(f"{res} · {score} · {surf} · {date}", expanded=False):
+            with st.expander(f"{res} · {score} · {surf} · {date_}", expanded=False):
                 st.write(f"**{score}**")
                 small_note(f"{pts} · Presión: {m.get('pressure_won',0)}/{m.get('pressure_total',0)} ({m.get('pressure_pct',0):.0f}%)")
 
@@ -1063,7 +1101,7 @@ if st.session_state.page == "LIVE":
                         games_l = st.number_input("Juegos Rival", 0, 50, value=int(m.get("games_l", 0)), step=1)
                         surface = st.selectbox("Superficie", SURFACES, index=SURFACES.index(m.get("surface", SURFACES[0])))
 
-                    date = st.text_input("Fecha (ISO)", value=str(m.get("date", "")))
+                    date_txt = st.text_input("Fecha (ISO)", value=str(m.get("date", "")))
 
                     bL, bR = st.columns(2, gap="small")
                     with bL:
@@ -1079,7 +1117,7 @@ if st.session_state.page == "LIVE":
                             m["games_w"] = int(games_w)
                             m["games_l"] = int(games_l)
                             m["surface"] = surface
-                            m["date"] = date
+                            m["date"] = date_txt
                             history.matches[i] = m
 
                             save_history_to_disk(user_key, history.matches)
@@ -1103,13 +1141,13 @@ if st.session_state.page == "LIVE":
     if up is not None:
         try:
             obj = json.loads(up.read().decode("utf-8"))
-            matches = obj.get("matches", [])
-            if not isinstance(matches, list):
+            matches_in = obj.get("matches", [])
+            if not isinstance(matches_in, list):
                 raise ValueError("Formato incorrecto: 'matches' debe ser una lista.")
-            for mm in matches:
+            for mm in matches_in:
                 if "id" not in mm:
                     mm["id"] = f"m_{datetime.now().timestamp()}"
-            history.matches = matches
+            history.matches = matches_in
             save_history_to_disk(user_key, history.matches)
             st.success("Historial importado ✅")
             st.rerun()
@@ -1207,6 +1245,171 @@ elif st.session_state.page == "STATS":
 
 
 # ==========================================================
+# PAGE: CALENDAR
+# ==========================================================
+elif st.session_state.page == "CALENDAR":
+    title_h("Calendario")
+    small_note("Tus eventos son privados por usuario (como el historial).")
+
+    events = st.session_state.calendar_events
+
+    def _sort_events(arr: list):
+        def keyf(ev):
+            d = ev.get("date") or "9999-12-31"
+            t_ = ev.get("time") or "23:59"
+            return (d, t_)
+        arr.sort(key=keyf)
+
+    with st.expander("➕ Añadir evento", expanded=True):
+        c1, c2 = st.columns([1.1, 0.9], gap="small")
+        with c1:
+            ev_title = st.text_input("Título", placeholder="Ej: Entreno / Partido / Torneo", key="cal_title")
+            ev_loc = st.text_input("Lugar (opcional)", placeholder="Ej: Pinter / Club / Ciudad", key="cal_loc")
+        with c2:
+            ev_date = st.date_input("Fecha", value=date.today(), key="cal_date")
+            ev_time = st.time_input("Hora (opcional)", value=time(18, 0), key="cal_time")
+
+        ev_notes = st.text_area("Notas (opcional)", placeholder="Objetivo, rival, pista, recordatorios…", key="cal_notes")
+
+        if st.button("Guardar evento", use_container_width=True, key="cal_add"):
+            eid = f"e_{datetime.now().timestamp()}"
+            events.append({
+                "id": eid,
+                "title": (ev_title or "Evento").strip(),
+                "date": ev_date.isoformat(),
+                "time": ev_time.strftime("%H:%M") if isinstance(ev_time, time) else "",
+                "location": (ev_loc or "").strip(),
+                "notes": (ev_notes or "").strip(),
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            _sort_events(events)
+            st.session_state.calendar_events = events
+            save_calendar_to_disk(user_key, events)
+            st.success("Evento guardado ✅")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Próximos eventos", anchor=False)
+
+    if not events:
+        st.info("Aún no hay eventos.")
+    else:
+        _sort_events(events)
+        for idx, ev in enumerate(events):
+            ev_title = ev.get("title", "Evento")
+            ev_date = ev.get("date", "")
+            ev_time = ev.get("time", "")
+            ev_loc = ev.get("location", "")
+            header = f"{ev_date} {ev_time}".strip()
+            if ev_loc:
+                header += f" · {ev_loc}"
+
+            with st.expander(f"🗓️ {ev_title} · {header}", expanded=False):
+                if ev_loc:
+                    st.write(f"**Lugar:** {ev_loc}")
+                st.write(f"**Fecha:** {ev_date}" + (f" · **Hora:** {ev_time}" if ev_time else ""))
+                if ev.get("notes"):
+                    small_note(ev["notes"])
+
+                e1, e2 = st.columns(2, gap="small")
+                with e1:
+                    if st.button("✏️ Editar", use_container_width=True, key=f"cal_edit_btn_{ev.get('id', idx)}"):
+                        st.session_state._cal_edit_open = True
+                        st.session_state._cal_edit_idx = idx
+                        st.rerun()
+                with e2:
+                    if st.button("🗑️ Borrar", use_container_Width=True, key=f"cal_del_btn_{ev.get('id', idx)}"):
+                        events.pop(idx)
+                        st.session_state.calendar_events = events
+                        save_calendar_to_disk(user_key, events)
+                        st.success("Evento borrado ✅")
+                        st.rerun()
+
+        if st.session_state.get("_cal_edit_open", False):
+            i = st.session_state.get("_cal_edit_idx", None)
+            if i is not None and 0 <= i < len(events):
+                ev = events[i]
+                with st.expander("✏️ Editar evento", expanded=True):
+                    t_ = st.text_input("Título", value=str(ev.get("title", "")), key="cal_edit_title")
+                    loc_ = st.text_input("Lugar (opcional)", value=str(ev.get("location", "")), key="cal_edit_loc")
+
+                    try:
+                        d0 = date.fromisoformat(ev.get("date", date.today().isoformat()))
+                    except Exception:
+                        d0 = date.today()
+
+                    try:
+                        tm = ev.get("time", "")
+                        if tm:
+                            hh, mm = tm.split(":")
+                            t0 = time(int(hh), int(mm))
+                        else:
+                            t0 = time(18, 0)
+                    except Exception:
+                        t0 = time(18, 0)
+
+                    d_ = st.date_input("Fecha", value=d0, key="cal_edit_date")
+                    t_in = st.time_input("Hora (opcional)", value=t0, key="cal_edit_time")
+                    notes_ = st.text_area("Notas (opcional)", value=str(ev.get("notes", "")), key="cal_edit_notes")
+
+                    bL, bR = st.columns(2, gap="small")
+                    with bL:
+                        if st.button("Cancelar edición", use_container_width=True, key="cal_edit_cancel"):
+                            st.session_state._cal_edit_open = False
+                            st.session_state._cal_edit_idx = None
+                            st.rerun()
+                    with bR:
+                        if st.button("Guardar cambios", use_container_width=True, key="cal_edit_save"):
+                            ev["title"] = (t_ or "Evento").strip()
+                            ev["location"] = (loc_ or "").strip()
+                            ev["date"] = d_.isoformat()
+                            ev["time"] = t_in.strftime("%H:%M") if isinstance(t_in, time) else ""
+                            ev["notes"] = (notes_ or "").strip()
+                            events[i] = ev
+                            _sort_events(events)
+                            st.session_state.calendar_events = events
+                            save_calendar_to_disk(user_key, events)
+                            st.session_state._cal_edit_open = False
+                            st.session_state._cal_edit_idx = None
+                            st.success("Cambios guardados ✅")
+                            st.rerun()
+
+    st.divider()
+    st.subheader("Exportar / Importar calendario", anchor=False)
+
+    cal_obj = {"events": events}
+    cal_json = json.dumps(cal_obj, ensure_ascii=False, indent=2).encode("utf-8")
+    st.download_button(
+        "⬇️ Descargar calendario (JSON)",
+        data=cal_json,
+        file_name=f"tennis_calendar__{user_key}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    cal_up = st.file_uploader("⬆️ Importar calendario (JSON)", type=["json"], key="cal_uploader")
+    if cal_up is not None:
+        try:
+            obj = json.loads(cal_up.read().decode("utf-8"))
+            evs = obj.get("events", [])
+            if not isinstance(evs, list):
+                raise ValueError("Formato incorrecto: 'events' debe ser una lista.")
+            for e in evs:
+                if "id" not in e:
+                    e["id"] = f"e_{datetime.now().timestamp()}"
+                if "date" not in e:
+                    e["date"] = date.today().isoformat()
+                if "title" not in e:
+                    e["title"] = "Evento"
+            st.session_state.calendar_events = evs
+            save_calendar_to_disk(user_key, evs)
+            st.success("Calendario importado ✅")
+            st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo importar: {e}")
+
+
+# ==========================================================
 # PAGE: NEWS
 # ==========================================================
 else:
@@ -1233,6 +1436,12 @@ else:
             link = it.get("link", "#")
             pub = it.get("published", "")
             if pub:
-                st.markdown(f"- **[{title}]({link})**  \n  <span class='small-note'>{src} · {pub}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    f"- **[{title}]({link})**  \n  <span class='small-note'>{src} · {pub}</span>",
+                    unsafe_allow_html=True,
+                )
             else:
-                st.markdown(f"- **[{title}]({link})**  \n  <span class='small-note'>{src}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    f"- **[{title}]({link})**  \n  <span class='small-note'>{src}</span>",
+                    unsafe_allow_html=True,
+                )
