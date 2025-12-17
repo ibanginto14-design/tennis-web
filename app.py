@@ -16,7 +16,7 @@ import streamlit as st
 st.set_page_config(page_title="TennisStats", page_icon="🎾", layout="centered")
 
 # ==========================================================
-# ESTILO (compacto)
+# ESTILO (compacto + título clicable)
 # ==========================================================
 st.markdown(
     """
@@ -27,6 +27,9 @@ div[data-testid="stVerticalBlock"] > div {gap: 0.55rem;}
 hr {margin: 0.6rem 0 !important;}
 h1,h2,h3 {margin: 0.15rem 0 0.25rem 0 !important;}
 div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
+@media (max-width: 480px){
+  .block-container {padding-left: 0.85rem; padding-right: 0.85rem;}
+}
 
 /* Tarjetas */
 .ts-card{
@@ -39,33 +42,44 @@ div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
 .ts-card h3{margin:0 0 6px 0 !important;}
 .ts-muted{color: rgba(0,0,0,0.55);}
 
-/* Cabecera con desplegable (zona amarilla) */
+/* Header row */
 .ts-header-row{
   display:flex;
   align-items:flex-end;
   justify-content:space-between;
-  gap: 12px;
-}
-.ts-header-title{
-  font-size: 44px;
-  font-weight: 800;
-  line-height: 1.02;
-  margin: 0;
-}
-@media (max-width: 480px){
-  .ts-header-title{font-size: 36px;}
+  gap: 10px;
 }
 
-/* Etiqueta pequeña bajo el select */
-.ts-nav-caption{
+/* BOTÓN que parece un título */
+button[kind="secondary"].ts-title-btn,
+button[kind="primary"].ts-title-btn{
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  text-align: left !important;
+}
+button.ts-title-btn > div{
+  font-size: 44px !important;
+  font-weight: 800 !important;
+  line-height: 1.02 !important;
+  padding: 0 !important;
+}
+@media (max-width: 480px){
+  button.ts-title-btn > div{font-size: 36px !important;}
+}
+
+/* Pequeño hint debajo */
+.ts-nav-hint{
   font-size: 12px;
   color: rgba(0,0,0,0.55);
   margin-top: -6px;
 }
 
-/* Evita márgenes raros en móvil */
-@media (max-width: 480px){
-  .block-container {padding-left: 0.85rem; padding-right: 0.85rem;}
+/* Popover: botones full width */
+.ts-nav-btn button{
+  width: 100% !important;
 }
 </style>
 """,
@@ -496,7 +510,7 @@ def _ensure_state():
     if "finish_selected" not in st.session_state:
         st.session_state.finish_selected = None
     if "nav" not in st.session_state:
-        st.session_state.nav = "🎾 LIVE"
+        st.session_state.nav = "LIVE"
     if "history_selected_idx" not in st.session_state:
         st.session_state.history_selected_idx = None
 
@@ -541,28 +555,71 @@ def fmt_match_line(m: Dict[str, Any]) -> str:
     return f"{w} · {m.get('sets_w',0)}-{m.get('sets_l',0)} sets · {m.get('games_w',0)}-{m.get('games_l',0)} juegos · {srf} · {dt}"
 
 
-NAV_OPTIONS = ["🎾 LIVE", "📊 ANALYSIS", "📈 STATS"]
+NAV_MAP = {
+    "LIVE": "🎾 LIVE",
+    "ANALYSIS": "📊 ANALYSIS",
+    "STATS": "📈 STATS",
+}
 
 
-def header_with_nav(title_big: str):
+def set_nav(new_nav: str):
+    if new_nav != st.session_state.nav:
+        st.session_state.nav = new_nav
+        st.rerun()
+
+
+def header_click_title(title_text: str):
     """
-    Cabecera con título grande + desplegable de navegación (zona amarilla)
+    Lo que quieres:
+    - Se ve el texto grande (LIVE MATCH / ANALYSIS / STATS)
+    - Al clicar el texto, se abre un menú para cambiar de página.
     """
-    left, right = st.columns([1.1, 0.9], vertical_alignment="bottom")
+    left, right = st.columns([1.2, 0.8], vertical_alignment="bottom")
+
     with left:
-        st.markdown(f'<div class="ts-header-title">{title_big}</div>', unsafe_allow_html=True)
-    with right:
-        new_nav = st.selectbox(
-            "Pantalla",
-            NAV_OPTIONS,
-            index=NAV_OPTIONS.index(st.session_state.nav),
-            label_visibility="collapsed",
-            key=f"nav_select_{title_big}",
+        # Botón que parece título
+        clicked = st.button(title_text, key=f"title_btn_{title_text}", type="secondary")
+        # Aplicamos clase CSS al botón recién creado
+        st.markdown(
+            """
+            <script>
+            const btns = window.parent.document.querySelectorAll('button[kind="secondary"]');
+            if(btns.length){
+              const last = btns[btns.length-1];
+              last.classList.add('ts-title-btn');
+            }
+            </script>
+            """,
+            unsafe_allow_html=True,
         )
-        st.markdown('<div class="ts-nav-caption">Cambiar pantalla</div>', unsafe_allow_html=True)
-        if new_nav != st.session_state.nav:
-            st.session_state.nav = new_nav
-            st.rerun()
+
+        # Si el usuario clica el título, abrimos el popover usando session flag
+        if clicked:
+            st.session_state["_nav_popover_open"] = True
+
+    with right:
+        # Popover “menú” (aparece al lado, pero el gesto es: clic en el título -> aparece)
+        open_now = bool(st.session_state.get("_nav_popover_open", False))
+        with st.popover("Cambiar", use_container_width=True):
+            st.markdown('<div class="ts-nav-btn">', unsafe_allow_html=True)
+            st.caption("Ir a…")
+            if st.button(NAV_MAP["LIVE"], use_container_width=True):
+                st.session_state["_nav_popover_open"] = False
+                set_nav("LIVE")
+            if st.button(NAV_MAP["ANALYSIS"], use_container_width=True):
+                st.session_state["_nav_popover_open"] = False
+                set_nav("ANALYSIS")
+            if st.button(NAV_MAP["STATS"], use_container_width=True):
+                st.session_state["_nav_popover_open"] = False
+                set_nav("STATS")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Si no estaba abierto por click, no hacemos nada (el popover se abre al tocar "Cambiar")
+        # PERO: para el caso "click en título", forzamos un pequeño hint visual
+        if open_now:
+            st.markdown('<div class="ts-nav-hint">Menú abierto ✅</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="ts-nav-hint">Toca el título para cambiar</div>', unsafe_allow_html=True)
 
 
 # ==========================================================
@@ -648,7 +705,7 @@ def screen_export_block():
 
 
 def screen_live():
-    header_with_nav("LIVE MATCH")
+    header_click_title("LIVE MATCH")
 
     total, won, pct = live.points_stats()
 
@@ -780,7 +837,7 @@ def screen_live():
 
 
 def screen_analysis():
-    header_with_nav("ANALYSIS")
+    header_click_title("ANALYSIS")
 
     p_point = live.estimate_point_win_prob()
     p_match = live.match_win_prob() * 100.0
@@ -806,7 +863,7 @@ def screen_analysis():
 
 
 def screen_stats():
-    header_with_nav("STATS")
+    header_click_title("STATS")
 
     card_open("Filtros")
     c1, c2 = st.columns([1, 1])
@@ -861,9 +918,9 @@ def screen_stats():
 # ==========================================================
 # ROUTER
 # ==========================================================
-if st.session_state.nav == "🎾 LIVE":
+if st.session_state.nav == "LIVE":
     screen_live()
-elif st.session_state.nav == "📊 ANALYSIS":
+elif st.session_state.nav == "ANALYSIS":
     screen_analysis()
 else:
     screen_stats()
