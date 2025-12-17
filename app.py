@@ -53,11 +53,13 @@ st.markdown(COMPACT_CSS, unsafe_allow_html=True)
 DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 HIST_DIR = os.path.join(DATA_DIR, "histories")
+CAL_DIR = os.path.join(DATA_DIR, "calendars")  # NEW
 
 
 def ensure_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(HIST_DIR, exist_ok=True)
+    os.makedirs(CAL_DIR, exist_ok=True)  # NEW
 
 
 def safe_user_key(username: str) -> str:
@@ -121,6 +123,33 @@ def save_history_to_disk(user_key: str, matches: list) -> None:
     ensure_dirs()
     path = history_path_for(user_key)
     payload = {"matches": matches}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+# ---------- CALENDAR STORAGE (NEW) ----------
+def calendar_path_for(user_key: str) -> str:
+    ensure_dirs()
+    return os.path.join(CAL_DIR, f"calendar__{user_key}.json")
+
+
+def load_calendar_from_disk(user_key: str) -> list:
+    path = calendar_path_for(user_key)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        events = obj.get("events", [])
+        return events if isinstance(events, list) else []
+    except Exception:
+        return []
+
+
+def save_calendar_to_disk(user_key: str, events: list) -> None:
+    ensure_dirs()
+    path = calendar_path_for(user_key)
+    payload = {"events": events}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -199,68 +228,6 @@ def fetch_tennis_news(max_items: int = 15):
         uniq.append(it)
 
     return uniq[:max_items]
-
-
-# ==========================================================
-# YOUTUBE (búsqueda sin API key: HTML + oEmbed)
-# ==========================================================
-def _safe_yt_ids_from_html(html: str, max_items: int = 10) -> list:
-    # Extrae videoId de la página de resultados
-    ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', html)
-    out, seen = [], set()
-    for vid in ids:
-        if vid in seen:
-            continue
-        seen.add(vid)
-        out.append(vid)
-        if len(out) >= max_items:
-            break
-    return out
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def youtube_search(query: str, max_items: int = 8) -> list:
-    q = (query or "").strip()
-    if not q:
-        return []
-
-    url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(q)
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Streamlit TennisStats)"},
-    )
-
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        html = resp.read().decode("utf-8", errors="ignore")
-
-    ids = _safe_yt_ids_from_html(html, max_items=max_items)
-    results = []
-    for vid in ids:
-        # oEmbed suele funcionar sin key y nos da título/canal
-        oembed = "https://www.youtube.com/oembed?format=json&url=" + urllib.parse.quote_plus(f"https://www.youtube.com/watch?v={vid}")
-        title = f"Video {vid}"
-        author = "YouTube"
-        try:
-            req2 = urllib.request.Request(
-                oembed,
-                headers={"User-Agent": "Mozilla/5.0 (Streamlit TennisStats)"},
-            )
-            with urllib.request.urlopen(req2, timeout=8) as r2:
-                obj = json.loads(r2.read().decode("utf-8", errors="ignore"))
-                title = obj.get("title") or title
-                author = obj.get("author_name") or author
-        except Exception:
-            pass
-
-        results.append(
-            {
-                "id": vid,
-                "title": title,
-                "author": author,
-                "link": f"https://www.youtube.com/watch?v={vid}",
-            }
-        )
-    return results
 
 
 # ==========================================================
@@ -744,6 +711,8 @@ def ss_init():
         st.session_state.auth_key = None
     if "authed" not in st.session_state:
         st.session_state.authed = False
+    if "calendar_events" not in st.session_state:  # NEW
+        st.session_state.calendar_events = []
 
 
 ss_init()
@@ -770,7 +739,7 @@ def title_h(txt: str):
 
 def nav_tiles():
     st.markdown("<div class='navwrap'><div class='navtitle'>Página</div></div>", unsafe_allow_html=True)
-    c1, c2, c3, c4, c5, c6 = st.columns(6, gap="small")
+    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
     with c1:
         if st.button("🎾 LIVE", use_container_width=True):
             st.session_state.page = "LIVE"
@@ -788,12 +757,8 @@ def nav_tiles():
             st.session_state.page = "NEWS"
             st.rerun()
     with c5:
-        if st.button("🧠 Psico", use_container_width=True):
-            st.session_state.page = "PSICO"
-            st.rerun()
-    with c6:
-        if st.button("▶️ YouTube", use_container_width=True):
-            st.session_state.page = "YOUTUBE"
+        if st.button("🗓️ Calendario", use_container_width=True):  # NEW
+            st.session_state.page = "CAL"
             st.rerun()
 
 
@@ -831,6 +796,7 @@ def auth_block():
                 st.session_state.auth_user = rec.get("display", u.strip() or key)
                 st.session_state.auth_key = key
                 st.session_state.history.matches = load_history_from_disk(key)
+                st.session_state.calendar_events = load_calendar_from_disk(key)  # NEW
                 st.success("Acceso correcto ✅")
                 st.rerun()
             else:
@@ -865,6 +831,7 @@ def auth_block():
             users[key] = rec
             save_users(users)
             save_history_to_disk(key, [])
+            save_calendar_to_disk(key, [])  # NEW
             st.success("Usuario creado ✅ Ya puedes entrar en la pestaña 'Entrar'.")
 
 
@@ -996,7 +963,6 @@ if st.session_state.page == "LIVE":
             sl = st.number_input("Sets Rival", 0, 5, value=int(live.state.sets_opp), step=1)
             gw = st.number_input("Juegos Yo", 0, 50, value=int(live.state.games_me), step=1)
             gl = st.number_input("Juegos Rival", 0, 50, value=int(live.state.games_opp), step=1)
-
             surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURFACES.index(live.surface))
 
             s_left, s_right = st.columns(2, gap="small")
@@ -1113,7 +1079,6 @@ if st.session_state.page == "LIVE":
                             m["surface"] = surface
                             m["date"] = date
                             history.matches[i] = m
-
                             save_history_to_disk(user_key, history.matches)
 
                             st.session_state._edit_open = False
@@ -1271,104 +1236,141 @@ elif st.session_state.page == "NEWS":
 
 
 # ==========================================================
-# PAGE: PSICO  (listar PDFs por bytes)
-# ==========================================================
-elif st.session_state.page == "PSICO":
-    title_h("Psico")
-    small_note("Material en PDF (visible y descargable).")
-
-    psico_dir = Path("psico_pdfs")
-    pdfs = []
-    if psico_dir.exists() and psico_dir.is_dir():
-        pdfs = sorted([p for p in psico_dir.glob("*.pdf") if p.is_file()], key=lambda x: x.name.lower())
-
-    st.divider()
-    if not pdfs:
-        st.info("No se han encontrado PDFs en la carpeta `psico_pdfs/`. Sube los archivos al repo y redeploy.")
-    else:
-        for p in pdfs:
-            k = hashlib.md5(p.name.encode("utf-8")).hexdigest()[:10]
-            with st.expander(f"📄 {p.name}", expanded=False):
-                try:
-                    data = p.read_bytes()
-                except Exception as e:
-                    st.error(f"No se pudo leer el PDF: {e}")
-                    continue
-
-                st.download_button(
-                    "⬇️ Descargar PDF",
-                    data=data,
-                    file_name=p.name,
-                    mime="application/pdf",
-                    use_container_width=True,
-                    key=f"psico_dl_{k}",
-                )
-
-                b64 = base64.b64encode(data).decode("utf-8")
-                html = f"""
-                <iframe
-                    src="data:application/pdf;base64,{b64}"
-                    width="100%"
-                    height="650"
-                    style="border: 1px solid rgba(0,0,0,0.08); border-radius: 10px;"
-                ></iframe>
-                """
-                st.components.v1.html(html, height=680, scrolling=False)
-
-
-# ==========================================================
-# PAGE: YOUTUBE
+# PAGE: CALENDAR (NEW)
 # ==========================================================
 else:
-    title_h("YouTube")
-    small_note("Busca vídeos de YouTube y reprodúcelos aquí (sin API key).")
+    title_h("Calendario")
+    small_note("Apunta eventos (privados por usuario) y se guardan aunque recargues la página.")
 
-    q = st.text_input("Buscar", value="", placeholder="Ej: tenis saque kick, mentalidad en competición, drills...")
-    c1, c2 = st.columns([1, 1], gap="small")
+    events = st.session_state.calendar_events
+
+    st.divider()
+    st.subheader("Añadir evento", anchor=False)
+
+    c1, c2 = st.columns([1.2, 0.8], gap="small")
     with c1:
-        max_items = st.selectbox("Resultados", [4, 6, 8, 10], index=2)
+        ev_title = st.text_input("Título", value="", placeholder="Ej: Torneo, sesión psico, entrenamiento, etc.")
     with c2:
-        if st.button("🔄 Limpiar caché búsqueda", use_container_width=True):
-            youtube_search.clear()
+        ev_type = st.selectbox("Tipo", ["Torneo", "Entrenamiento", "Sesión", "Viaje", "Otro"], index=0)
+
+    c3, c4 = st.columns(2, gap="small")
+    with c3:
+        ev_date = st.date_input("Fecha", value=datetime.now().date())
+    with c4:
+        ev_time = st.time_input("Hora", value=datetime.now().time().replace(second=0, microsecond=0))
+
+    ev_notes = st.text_area("Notas (opcional)", value="", placeholder="Detalles, lugar, objetivo, etc.", height=90)
+
+    cA, cB = st.columns(2, gap="small")
+    with cA:
+        if st.button("➕ Guardar evento", use_container_width=True):
+            if not ev_title.strip():
+                st.error("Pon un título al evento.")
+            else:
+                ev = {
+                    "id": f"e_{datetime.now().timestamp()}",
+                    "title": ev_title.strip(),
+                    "type": ev_type,
+                    "date": ev_date.isoformat(),
+                    "time": ev_time.strftime("%H:%M"),
+                    "notes": ev_notes.strip(),
+                    "created": datetime.now().isoformat(timespec="seconds"),
+                }
+                events.append(ev)
+                # ordenar por fecha/hora
+                def _key(x):
+                    return (x.get("date", ""), x.get("time", "00:00"))
+                events.sort(key=_key)
+                st.session_state.calendar_events = events
+                save_calendar_to_disk(user_key, events)
+                st.success("Evento guardado ✅")
+                st.rerun()
+
+    with cB:
+        if st.button("🔄 Recargar desde disco", use_container_width=True):
+            st.session_state.calendar_events = load_calendar_from_disk(user_key)
+            st.success("Calendario recargado ✅")
             st.rerun()
 
     st.divider()
+    st.subheader("Tus eventos", anchor=False)
 
-    if not q.strip():
-        st.info("Escribe algo para buscar vídeos.")
+    if not events:
+        st.info("Aún no tienes eventos.")
     else:
-        try:
-            results = youtube_search(q.strip(), max_items=int(max_items))
-        except Exception as e:
-            st.error(f"No se pudo buscar ahora mismo: {e}")
-            results = []
+        for idx, ev in enumerate(events):
+            eid = ev.get("id", f"idx_{idx}")
+            title = ev.get("title", "Evento")
+            typ = ev.get("type", "—")
+            date = ev.get("date", "")
+            time = ev.get("time", "")
+            notes = ev.get("notes", "")
 
-        if not results:
-            st.info("No se encontraron resultados (o YouTube bloqueó la búsqueda). Prueba otra palabra.")
-        else:
-            for r in results:
-                vid = r["id"]
-                title = r.get("title", "Vídeo")
-                author = r.get("author", "Canal")
-                link = r.get("link", f"https://www.youtube.com/watch?v={vid}")
+            with st.expander(f"🗓️ {date} {time} · {typ} · {title}", expanded=False):
+                if notes:
+                    small_note(notes)
 
-                with st.expander(f"▶️ {title}", expanded=False):
-                    st.markdown(f"<div class='small-note'>{author}</div>", unsafe_allow_html=True)
-                    st.markdown(f"- **Enlace:** {link}")
+                d1, d2 = st.columns(2, gap="small")
+                with d1:
+                    if st.button("🗑️ Borrar", use_container_width=True, key=f"cal_del_{eid}"):
+                        # borrar por id
+                        st.session_state.calendar_events = [x for x in st.session_state.calendar_events if x.get("id") != eid]
+                        save_calendar_to_disk(user_key, st.session_state.calendar_events)
+                        st.success("Evento borrado ✅")
+                        st.rerun()
+                with d2:
+                    # edición simple: reescribe campos y guarda
+                    if st.button("✏️ Editar", use_container_width=True, key=f"cal_edit_btn_{eid}"):
+                        st.session_state._cal_edit_id = eid
+                        st.rerun()
 
-                    st.components.v1.html(
-                        f"""
-                        <iframe
-                            width="100%"
-                            height="360"
-                            src="https://www.youtube.com/embed/{vid}"
-                            title="{title}"
-                            frameborder="0"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                            allowfullscreen
-                            style="border-radius: 10px; border: 1px solid rgba(0,0,0,0.08);"
-                        ></iframe>
-                        """,
-                        height=380,
-                        scrolling=False,
-                    )
+        # bloque de edición (fuera del loop para evitar duplicados)
+        edit_id = st.session_state.get("_cal_edit_id", None)
+        if edit_id:
+            ev = next((x for x in st.session_state.calendar_events if x.get("id") == edit_id), None)
+            if ev is None:
+                st.session_state._cal_edit_id = None
+            else:
+                st.divider()
+                st.subheader("Editar evento", anchor=False)
+
+                et = st.text_input("Título (editar)", value=ev.get("title", ""), key=f"cal_e_title_{edit_id}")
+                etype = st.selectbox("Tipo (editar)", ["Torneo", "Entrenamiento", "Sesión", "Viaje", "Otro"],
+                                     index=max(0, ["Torneo", "Entrenamiento", "Sesión", "Viaje", "Otro"].index(ev.get("type", "Otro"))),
+                                     key=f"cal_e_type_{edit_id}")
+                edate = st.date_input("Fecha (editar)", value=datetime.fromisoformat(ev.get("date")).date() if ev.get("date") else datetime.now().date(),
+                                      key=f"cal_e_date_{edit_id}")
+                # hora
+                try:
+                    hh, mm = (ev.get("time", "00:00").split(":") + ["0"])[:2]
+                    etime_default = datetime.now().time().replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+                except Exception:
+                    etime_default = datetime.now().time().replace(second=0, microsecond=0)
+                etime = st.time_input("Hora (editar)", value=etime_default, key=f"cal_e_time_{edit_id}")
+                enotes = st.text_area("Notas (editar)", value=ev.get("notes", ""), height=90, key=f"cal_e_notes_{edit_id}")
+
+                b1, b2 = st.columns(2, gap="small")
+                with b1:
+                    if st.button("Cancelar edición", use_container_width=True, key=f"cal_e_cancel_{edit_id}"):
+                        st.session_state._cal_edit_id = None
+                        st.rerun()
+                with b2:
+                    if st.button("Guardar cambios", use_container_width=True, key=f"cal_e_save_{edit_id}"):
+                        if not et.strip():
+                            st.error("El título no puede estar vacío.")
+                        else:
+                            ev["title"] = et.strip()
+                            ev["type"] = etype
+                            ev["date"] = edate.isoformat()
+                            ev["time"] = etime.strftime("%H:%M")
+                            ev["notes"] = enotes.strip()
+
+                            # reordenar
+                            def _key(x):
+                                return (x.get("date", ""), x.get("time", "00:00"))
+                            st.session_state.calendar_events.sort(key=_key)
+
+                            save_calendar_to_disk(user_key, st.session_state.calendar_events)
+                            st.session_state._cal_edit_id = None
+                            st.success("Evento actualizado ✅")
+                            st.rerun()
