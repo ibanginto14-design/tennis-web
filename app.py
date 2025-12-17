@@ -5,6 +5,7 @@ import base64
 import secrets
 import hashlib
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from dataclasses import dataclass
@@ -198,6 +199,68 @@ def fetch_tennis_news(max_items: int = 15):
         uniq.append(it)
 
     return uniq[:max_items]
+
+
+# ==========================================================
+# YOUTUBE (búsqueda sin API key: HTML + oEmbed)
+# ==========================================================
+def _safe_yt_ids_from_html(html: str, max_items: int = 10) -> list:
+    # Extrae videoId de la página de resultados
+    ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', html)
+    out, seen = [], set()
+    for vid in ids:
+        if vid in seen:
+            continue
+        seen.add(vid)
+        out.append(vid)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def youtube_search(query: str, max_items: int = 8) -> list:
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(q)
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (Streamlit TennisStats)"},
+    )
+
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        html = resp.read().decode("utf-8", errors="ignore")
+
+    ids = _safe_yt_ids_from_html(html, max_items=max_items)
+    results = []
+    for vid in ids:
+        # oEmbed suele funcionar sin key y nos da título/canal
+        oembed = "https://www.youtube.com/oembed?format=json&url=" + urllib.parse.quote_plus(f"https://www.youtube.com/watch?v={vid}")
+        title = f"Video {vid}"
+        author = "YouTube"
+        try:
+            req2 = urllib.request.Request(
+                oembed,
+                headers={"User-Agent": "Mozilla/5.0 (Streamlit TennisStats)"},
+            )
+            with urllib.request.urlopen(req2, timeout=8) as r2:
+                obj = json.loads(r2.read().decode("utf-8", errors="ignore"))
+                title = obj.get("title") or title
+                author = obj.get("author_name") or author
+        except Exception:
+            pass
+
+        results.append(
+            {
+                "id": vid,
+                "title": title,
+                "author": author,
+                "link": f"https://www.youtube.com/watch?v={vid}",
+            }
+        )
+    return results
 
 
 # ==========================================================
@@ -707,7 +770,7 @@ def title_h(txt: str):
 
 def nav_tiles():
     st.markdown("<div class='navwrap'><div class='navtitle'>Página</div></div>", unsafe_allow_html=True)
-    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
+    c1, c2, c3, c4, c5, c6 = st.columns(6, gap="small")
     with c1:
         if st.button("🎾 LIVE", use_container_width=True):
             st.session_state.page = "LIVE"
@@ -727,6 +790,10 @@ def nav_tiles():
     with c5:
         if st.button("🧠 Psico", use_container_width=True):
             st.session_state.page = "PSICO"
+            st.rerun()
+    with c6:
+        if st.button("▶️ YouTube", use_container_width=True):
+            st.session_state.page = "YOUTUBE"
             st.rerun()
 
 
@@ -1204,9 +1271,9 @@ elif st.session_state.page == "NEWS":
 
 
 # ==========================================================
-# PAGE: PSICO  (FIX: listar TODOS los PDFs por bytes)
+# PAGE: PSICO  (listar PDFs por bytes)
 # ==========================================================
-else:
+elif st.session_state.page == "PSICO":
     title_h("Psico")
     small_note("Material en PDF (visible y descargable).")
 
@@ -1220,7 +1287,6 @@ else:
         st.info("No se han encontrado PDFs en la carpeta `psico_pdfs/`. Sube los archivos al repo y redeploy.")
     else:
         for p in pdfs:
-            # clave estable y segura aunque haya tildes
             k = hashlib.md5(p.name.encode("utf-8")).hexdigest()[:10]
             with st.expander(f"📄 {p.name}", expanded=False):
                 try:
@@ -1238,7 +1304,6 @@ else:
                     key=f"psico_dl_{k}",
                 )
 
-                # visor embebido (data URI) -> no depende de rutas ni de caracteres raros
                 b64 = base64.b64encode(data).decode("utf-8")
                 html = f"""
                 <iframe
@@ -1249,3 +1314,61 @@ else:
                 ></iframe>
                 """
                 st.components.v1.html(html, height=680, scrolling=False)
+
+
+# ==========================================================
+# PAGE: YOUTUBE
+# ==========================================================
+else:
+    title_h("YouTube")
+    small_note("Busca vídeos de YouTube y reprodúcelos aquí (sin API key).")
+
+    q = st.text_input("Buscar", value="", placeholder="Ej: tenis saque kick, mentalidad en competición, drills...")
+    c1, c2 = st.columns([1, 1], gap="small")
+    with c1:
+        max_items = st.selectbox("Resultados", [4, 6, 8, 10], index=2)
+    with c2:
+        if st.button("🔄 Limpiar caché búsqueda", use_container_width=True):
+            youtube_search.clear()
+            st.rerun()
+
+    st.divider()
+
+    if not q.strip():
+        st.info("Escribe algo para buscar vídeos.")
+    else:
+        try:
+            results = youtube_search(q.strip(), max_items=int(max_items))
+        except Exception as e:
+            st.error(f"No se pudo buscar ahora mismo: {e}")
+            results = []
+
+        if not results:
+            st.info("No se encontraron resultados (o YouTube bloqueó la búsqueda). Prueba otra palabra.")
+        else:
+            for r in results:
+                vid = r["id"]
+                title = r.get("title", "Vídeo")
+                author = r.get("author", "Canal")
+                link = r.get("link", f"https://www.youtube.com/watch?v={vid}")
+
+                with st.expander(f"▶️ {title}", expanded=False):
+                    st.markdown(f"<div class='small-note'>{author}</div>", unsafe_allow_html=True)
+                    st.markdown(f"- **Enlace:** {link}")
+
+                    st.components.v1.html(
+                        f"""
+                        <iframe
+                            width="100%"
+                            height="360"
+                            src="https://www.youtube.com/embed/{vid}"
+                            title="{title}"
+                            frameborder="0"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            allowfullscreen
+                            style="border-radius: 10px; border: 1px solid rgba(0,0,0,0.08);"
+                        ></iframe>
+                        """,
+                        height=380,
+                        scrolling=False,
+                    )
