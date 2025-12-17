@@ -1074,32 +1074,74 @@ if st.session_state.page == "LIVE":
                     st.session_state._coach_text = ""
                     st.rerun()
 
+        # ==========================================================
+        # ✅ FIX AQUÍ: keys únicos para evitar StreamlitDuplicateElement
+        # ==========================================================
         if st.session_state.get("_edit_open", False):
             i = st.session_state.get("_edit_index", None)
             if i is not None and 0 <= i < len(history.matches):
                 m = history.matches[i]
+                uid = str(m.get("id", f"idx_{i}"))
+
                 with st.expander("✏️ Editar partido", expanded=True):
                     st.write("Modifica los campos y guarda.")
                     col1, col2 = st.columns(2, gap="small")
                     with col1:
-                        won_match = st.toggle("Victoria", value=bool(m.get("won_match", False)))
-                        sets_w = st.number_input("Sets Yo", 0, 5, value=int(m.get("sets_w", 0)), step=1)
-                        games_w = st.number_input("Juegos Yo", 0, 50, value=int(m.get("games_w", 0)), step=1)
+                        won_match = st.toggle(
+                            "Victoria",
+                            value=bool(m.get("won_match", False)),
+                            key=f"edit_won_{uid}",
+                        )
+                        sets_w = st.number_input(
+                            "Sets Yo",
+                            0, 5,
+                            value=int(m.get("sets_w", 0)),
+                            step=1,
+                            key=f"edit_sets_w_{uid}",
+                        )
+                        games_w = st.number_input(
+                            "Juegos Yo",
+                            0, 50,
+                            value=int(m.get("games_w", 0)),
+                            step=1,
+                            key=f"edit_games_w_{uid}",
+                        )
                     with col2:
-                        sets_l = st.number_input("Sets Rival", 0, 5, value=int(m.get("sets_l", 0)), step=1)
-                        games_l = st.number_input("Juegos Rival", 0, 50, value=int(m.get("games_l", 0)), step=1)
-                        surface = st.selectbox("Superficie", SURFACES, index=SURFACES.index(m.get("surface", SURFACES[0])))
+                        sets_l = st.number_input(
+                            "Sets Rival",
+                            0, 5,
+                            value=int(m.get("sets_l", 0)),
+                            step=1,
+                            key=f"edit_sets_l_{uid}",
+                        )
+                        games_l = st.number_input(
+                            "Juegos Rival",
+                            0, 50,
+                            value=int(m.get("games_l", 0)),
+                            step=1,
+                            key=f"edit_games_l_{uid}",
+                        )
+                        surface = st.selectbox(
+                            "Superficie",
+                            SURFACES,
+                            index=SURFACES.index(m.get("surface", SURFACES[0])),
+                            key=f"edit_surface_{uid}",  # <- clave del fix
+                        )
 
-                    date = st.text_input("Fecha (ISO)", value=str(m.get("date", "")))
+                    date = st.text_input(
+                        "Fecha (ISO)",
+                        value=str(m.get("date", "")),
+                        key=f"edit_date_{uid}",
+                    )
 
                     bL, bR = st.columns(2, gap="small")
                     with bL:
-                        if st.button("Cancelar edición", use_container_width=True):
+                        if st.button("Cancelar edición", use_container_width=True, key=f"edit_cancel_{uid}"):
                             st.session_state._edit_open = False
                             st.session_state._edit_index = None
                             st.rerun()
                     with bR:
-                        if st.button("Guardar cambios", use_container_width=True):
+                        if st.button("Guardar cambios", use_container_width=True, key=f"edit_save_{uid}"):
                             m["won_match"] = bool(won_match)
                             m["sets_w"] = int(sets_w)
                             m["sets_l"] = int(sets_l)
@@ -1329,7 +1371,6 @@ else:
                         st.rerun()
 
                 with b2:
-                    # ✅ FIX APLICADO AQUÍ: use_container_width (minúsculas)
                     if st.button("🗑️ Borrar", use_container_width=True, key=f"cal_del_btn_{ev.get('id', idx)}"):
                         events = [x for x in events if x.get("id") != ev.get("id")]
                         st.session_state.calendar_events = events
@@ -1366,7 +1407,6 @@ else:
                             current["place"] = (pl or "").strip()
                             current["notes"] = (nt or "").strip()
 
-                            # reemplaza en lista
                             events2 = []
                             for x in events:
                                 events2.append(current if x.get("id") == edit_id else x)
