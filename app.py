@@ -16,7 +16,7 @@ import streamlit as st
 st.set_page_config(page_title="TennisStats", page_icon="🎾", layout="centered")
 
 # ==========================================================
-# ESTILO (compacto + título clicable)
+# ESTILO (compacto + "título clicable" seguro)
 # ==========================================================
 st.markdown(
     """
@@ -42,17 +42,8 @@ div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
 .ts-card h3{margin:0 0 6px 0 !important;}
 .ts-muted{color: rgba(0,0,0,0.55);}
 
-/* Header row */
-.ts-header-row{
-  display:flex;
-  align-items:flex-end;
-  justify-content:space-between;
-  gap: 10px;
-}
-
-/* BOTÓN que parece un título */
-button[kind="secondary"].ts-title-btn,
-button[kind="primary"].ts-title-btn{
+/* Botón que parece título (sin depender de JS) */
+.ts-title-btn button{
   border: none !important;
   background: transparent !important;
   padding: 0 !important;
@@ -60,26 +51,19 @@ button[kind="primary"].ts-title-btn{
   box-shadow: none !important;
   text-align: left !important;
 }
-button.ts-title-btn > div{
+.ts-title-btn button *{
   font-size: 44px !important;
   font-weight: 800 !important;
   line-height: 1.02 !important;
-  padding: 0 !important;
 }
 @media (max-width: 480px){
-  button.ts-title-btn > div{font-size: 36px !important;}
+  .ts-title-btn button *{font-size: 36px !important;}
 }
 
-/* Pequeño hint debajo */
 .ts-nav-hint{
   font-size: 12px;
   color: rgba(0,0,0,0.55);
   margin-top: -6px;
-}
-
-/* Popover: botones full width */
-.ts-nav-btn button{
-  width: 100% !important;
 }
 </style>
 """,
@@ -513,15 +497,14 @@ def _ensure_state():
         st.session_state.nav = "LIVE"
     if "history_selected_idx" not in st.session_state:
         st.session_state.history_selected_idx = None
+    if "nav_picker_open" not in st.session_state:
+        st.session_state.nav_picker_open = False
 
 
 _ensure_state()
 live: LiveMatch = st.session_state.live
 history: MatchHistory = st.session_state.history
 
-# ==========================================================
-# HELPERS UI
-# ==========================================================
 FINISH_ITEMS = [
     ("winner", "Winner"),
     ("unforced", "ENF"),
@@ -532,16 +515,57 @@ FINISH_ITEMS = [
     ("opp_winner", "Winner rival"),
 ]
 
+NAV_CHOICES = {
+    "LIVE": "LIVE MATCH",
+    "ANALYSIS": "ANALYSIS",
+    "STATS": "STATS",
+}
 
-def card_open(title: str, subtitle: Optional[str] = None):
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown(f"### {title}")
-    if subtitle:
-        st.markdown(f'<div class="ts-muted">{subtitle}</div>', unsafe_allow_html=True)
+
+def set_nav(new_nav: str):
+    if new_nav != st.session_state.nav:
+        st.session_state.nav = new_nav
+        st.session_state.nav_picker_open = False
+        st.rerun()
 
 
-def card_close():
-    st.markdown("</div>", unsafe_allow_html=True)
+def header_click_title():
+    """
+    TÍTULO SIEMPRE VISIBLE.
+    Al clicar el título, aparece un desplegable debajo para cambiar de página.
+    """
+    title = NAV_CHOICES.get(st.session_state.nav, "LIVE MATCH")
+
+    # Contenedor para poder aplicar clase CSS estable al botón-título
+    with st.container():
+        st.markdown('<div class="ts-title-btn">', unsafe_allow_html=True)
+        if st.button(title, key="__title_click__", type="secondary"):
+            st.session_state.nav_picker_open = not st.session_state.nav_picker_open
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="ts-nav-hint">Toca el título para cambiar de pantalla</div>', unsafe_allow_html=True)
+
+    if st.session_state.nav_picker_open:
+        # Menú desplegable “real” (selectbox) que aparece SOLO tras clicar el título
+        current = st.session_state.nav
+        inv = {v: k for k, v in NAV_CHOICES.items()}
+        labels = [NAV_CHOICES["LIVE"], NAV_CHOICES["ANALYSIS"], NAV_CHOICES["STATS"]]
+        cur_label = NAV_CHOICES[current]
+
+        choice = st.selectbox(
+            "Cambiar a…",
+            options=labels,
+            index=labels.index(cur_label),
+            key="__nav_selectbox__",
+        )
+        new_nav = inv[choice]
+        if new_nav != current:
+            set_nav(new_nav)
+
+        if st.button("Cerrar menú", use_container_width=True):
+            st.session_state.nav_picker_open = False
+            st.rerun()
 
 
 def fmt_match_line(m: Dict[str, Any]) -> str:
@@ -555,76 +579,6 @@ def fmt_match_line(m: Dict[str, Any]) -> str:
     return f"{w} · {m.get('sets_w',0)}-{m.get('sets_l',0)} sets · {m.get('games_w',0)}-{m.get('games_l',0)} juegos · {srf} · {dt}"
 
 
-NAV_MAP = {
-    "LIVE": "🎾 LIVE",
-    "ANALYSIS": "📊 ANALYSIS",
-    "STATS": "📈 STATS",
-}
-
-
-def set_nav(new_nav: str):
-    if new_nav != st.session_state.nav:
-        st.session_state.nav = new_nav
-        st.rerun()
-
-
-def header_click_title(title_text: str):
-    """
-    Lo que quieres:
-    - Se ve el texto grande (LIVE MATCH / ANALYSIS / STATS)
-    - Al clicar el texto, se abre un menú para cambiar de página.
-    """
-    left, right = st.columns([1.2, 0.8], vertical_alignment="bottom")
-
-    with left:
-        # Botón que parece título
-        clicked = st.button(title_text, key=f"title_btn_{title_text}", type="secondary")
-        # Aplicamos clase CSS al botón recién creado
-        st.markdown(
-            """
-            <script>
-            const btns = window.parent.document.querySelectorAll('button[kind="secondary"]');
-            if(btns.length){
-              const last = btns[btns.length-1];
-              last.classList.add('ts-title-btn');
-            }
-            </script>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Si el usuario clica el título, abrimos el popover usando session flag
-        if clicked:
-            st.session_state["_nav_popover_open"] = True
-
-    with right:
-        # Popover “menú” (aparece al lado, pero el gesto es: clic en el título -> aparece)
-        open_now = bool(st.session_state.get("_nav_popover_open", False))
-        with st.popover("Cambiar", use_container_width=True):
-            st.markdown('<div class="ts-nav-btn">', unsafe_allow_html=True)
-            st.caption("Ir a…")
-            if st.button(NAV_MAP["LIVE"], use_container_width=True):
-                st.session_state["_nav_popover_open"] = False
-                set_nav("LIVE")
-            if st.button(NAV_MAP["ANALYSIS"], use_container_width=True):
-                st.session_state["_nav_popover_open"] = False
-                set_nav("ANALYSIS")
-            if st.button(NAV_MAP["STATS"], use_container_width=True):
-                st.session_state["_nav_popover_open"] = False
-                set_nav("STATS")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        # Si no estaba abierto por click, no hacemos nada (el popover se abre al tocar "Cambiar")
-        # PERO: para el caso "click en título", forzamos un pequeño hint visual
-        if open_now:
-            st.markdown('<div class="ts-nav-hint">Menú abierto ✅</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="ts-nav-hint">Toca el título para cambiar</div>', unsafe_allow_html=True)
-
-
-# ==========================================================
-# PANTALLAS
-# ==========================================================
 def screen_export_block():
     st.header("Exportar")
     st.caption("Aquí ves tu historial: puedes **editarlo / borrarlo** y **exportarlo / importarlo** en JSON.")
@@ -705,7 +659,7 @@ def screen_export_block():
 
 
 def screen_live():
-    header_click_title("LIVE MATCH")
+    header_click_title()
 
     total, won, pct = live.points_stats()
 
@@ -794,7 +748,9 @@ def screen_live():
             st.rerun()
 
     if st.session_state.get("_open_finish_modal"):
-        card_open("Finalizar partido", "Guarda el resultado en el historial.")
+        st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+        st.markdown("### Finalizar partido")
+        st.caption("Guarda el resultado en el historial.")
         sw = st.number_input("Sets Yo", min_value=0, step=1, value=int(live.state.sets_me))
         sl = st.number_input("Sets Rival", min_value=0, step=1, value=int(live.state.sets_opp))
         gw = st.number_input("Juegos Yo", min_value=0, step=1, value=int(live.state.games_me))
@@ -830,53 +786,56 @@ def screen_live():
                 st.session_state["_open_finish_modal"] = False
                 st.success("Partido guardado ✅")
                 st.rerun()
-        card_close()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
     screen_export_block()
 
 
 def screen_analysis():
-    header_click_title("ANALYSIS")
+    header_click_title()
 
     p_point = live.estimate_point_win_prob()
     p_match = live.match_win_prob() * 100.0
 
-    card_open("Win Probability (modelo real)")
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown("### Win Probability (modelo real)")
     st.write(f"**p(punto)≈{p_point:.2f} · Win Prob≈{p_match:.1f}%**")
     st.caption("Modelo: Markov (punto→juego→set→BO3). p(punto) se estima con tus puntos del partido.")
-
     probs = live.win_prob_series()
     if len(probs) < 2:
         st.info("Aún no hay suficientes puntos para dibujar la gráfica (mínimo 2).")
     else:
         st.line_chart(probs, height=260)
-    card_close()
+    st.markdown("</div>", unsafe_allow_html=True)
 
     total = sum(1 for p in live.points if p.get("pressure"))
     won = sum(1 for p in live.points if p.get("pressure") and p["result"] == "win")
     pct = (won / total * 100.0) if total else 0.0
 
-    card_open("Puntos de presión (live)")
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown("### Puntos de presión (live)")
     st.write(f"**{won}/{total}** ganados (**{pct:.0f}%**) en deuce/tiebreak.")
-    card_close()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def screen_stats():
-    header_click_title("STATS")
+    header_click_title()
 
-    card_open("Filtros")
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown("### Filtros")
     c1, c2 = st.columns([1, 1])
     with c1:
         n = st.selectbox("Partidos", ["Últ. 10", "Últ. 30", "Todos"], index=0)
         filter_n = 10 if n == "Últ. 10" else 30 if n == "Últ. 30" else None
     with c2:
         filter_surface = st.selectbox("Superficie", ["Todas", "Tierra batida", "Pista rápida", "Hierba", "Indoor"], index=0)
-    card_close()
+    st.markdown("</div>", unsafe_allow_html=True)
 
     agg = history.aggregate(n=filter_n, surface=filter_surface)
 
-    card_open("Resumen")
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown("### Resumen")
     st.write(
         f"**Partidos:** {agg['matches_win']}/{agg['matches_total']} ({agg['matches_pct']:.0f}%)  ·  "
         f"**Sets:** {agg['sets_w']}/{agg['sets_w'] + agg['sets_l']} ({agg['sets_pct']:.0f}%)  ·  "
@@ -891,9 +850,10 @@ def screen_stats():
         f"Winners {fin['winner']} · ENF {fin['unforced']} · EF {fin['forced']} · "
         f"Aces {fin['ace']} · Dobles faltas {fin['double_fault']}"
     )
-    card_close()
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    card_open("Racha")
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown("### Racha")
     results = history.last_n_results(10, surface=(None if filter_surface == "Todas" else filter_surface))
     if not results:
         st.info("Aún no hay partidos guardados.")
@@ -901,10 +861,11 @@ def screen_stats():
         st.write("Últimos 10: " + "  ".join(results))
     best = history.best_streak(surface=(None if filter_surface == "Todas" else filter_surface))
     st.write(f"Mejor racha: **{best}** victorias seguidas")
-    card_close()
+    st.markdown("</div>", unsafe_allow_html=True)
 
     order = ["Tierra batida", "Pista rápida", "Hierba", "Indoor"]
-    card_open("Superficies")
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown("### Superficies")
     rows = []
     for srf in order:
         w = agg["surfaces"].get(srf, {}).get("w", 0)
@@ -912,7 +873,7 @@ def screen_stats():
         pct_ = (w / t * 100.0) if t else 0.0
         rows.append({"Superficie": srf, "Victorias": w, "Total": t, "%": round(pct_, 0)})
     st.dataframe(rows, use_container_width=True, hide_index=True)
-    card_close()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ==========================================================
