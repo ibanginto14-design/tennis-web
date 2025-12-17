@@ -6,6 +6,8 @@ import secrets
 import hashlib
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
+import mimetypes
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import datetime
@@ -51,13 +53,11 @@ st.markdown(COMPACT_CSS, unsafe_allow_html=True)
 DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 HIST_DIR = os.path.join(DATA_DIR, "histories")
-CAL_DIR = os.path.join(DATA_DIR, "calendars")
 
 
 def ensure_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(HIST_DIR, exist_ok=True)
-    os.makedirs(CAL_DIR, exist_ok=True)
 
 
 def safe_user_key(username: str) -> str:
@@ -125,32 +125,6 @@ def save_history_to_disk(user_key: str, matches: list) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
-def calendar_path_for(user_key: str) -> str:
-    ensure_dirs()
-    return os.path.join(CAL_DIR, f"calendar__{user_key}.json")
-
-
-def load_calendar_from_disk(user_key: str) -> list:
-    path = calendar_path_for(user_key)
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        events = obj.get("events", [])
-        return events if isinstance(events, list) else []
-    except Exception:
-        return []
-
-
-def save_calendar_to_disk(user_key: str, events: list) -> None:
-    ensure_dirs()
-    path = calendar_path_for(user_key)
-    payload = {"events": events}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
 # ==========================================================
 # NOTICIAS (RSS)
 # ==========================================================
@@ -190,6 +164,7 @@ def fetch_tennis_news(max_items: int = 15):
                 data = resp.read()
 
             root = ET.fromstring(data)
+            # RSS
             channel = root.find("channel")
             if channel is not None:
                 for it in channel.findall("item"):
@@ -197,17 +172,25 @@ def fetch_tennis_news(max_items: int = 15):
                     link = _first_text(it, ["link"])
                     pub = _first_text(it, ["pubDate", "{http://purl.org/dc/elements/1.1/}date"])
                     if title and link:
-                        items.append({"source": source_name, "title": title, "link": link, "published": pub})
+                        items.append(
+                            {"source": source_name, "title": title, "link": link, "published": pub}
+                        )
                 continue
 
+            # Atom (feed/entry)
             if root.tag.endswith("feed"):
                 ns = {"a": "http://www.w3.org/2005/Atom"}
                 for entry in root.findall("a:entry", ns):
                     title = _first_text(entry, ["{http://www.w3.org/2005/Atom}title"])
                     link = _attr(entry, "{http://www.w3.org/2005/Atom}link", "href")
-                    pub = _first_text(entry, ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"])
+                    pub = _first_text(
+                        entry,
+                        ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"],
+                    )
                     if title and link:
-                        items.append({"source": source_name, "title": title, "link": link, "published": pub})
+                        items.append(
+                            {"source": source_name, "title": title, "link": link, "published": pub}
+                        )
         except Exception:
             continue
 
@@ -220,6 +203,52 @@ def fetch_tennis_news(max_items: int = 15):
         uniq.append(it)
 
     return uniq[:max_items]
+
+
+# ==========================================================
+# PSICO (ZIP)
+# ==========================================================
+# Pon aquí el ZIP en tu repo de Streamlit. Ejemplo: "psico.zip" en la raíz.
+PSICO_ZIP_PATH = "psico.zip"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def psico_list_files(zip_path: str):
+    if not os.path.exists(zip_path):
+        return []
+    files = []
+    try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                name = info.filename
+                size = int(info.file_size or 0)
+                ext = os.path.splitext(name)[1].lower()
+                files.append({"name": name, "size": size, "ext": ext})
+    except Exception:
+        return []
+    # ordena por ruta/nombre
+    files.sort(key=lambda x: x["name"].lower())
+    return files
+
+
+def psico_read_file(zip_path: str, inner_name: str) -> bytes:
+    with zipfile.ZipFile(zip_path, "r") as z:
+        with z.open(inner_name, "r") as f:
+            return f.read()
+
+
+def _human_size(n: int) -> str:
+    try:
+        n = int(n)
+    except Exception:
+        return "—"
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024**2:
+        return f"{n/1024:.1f} KB"
+    return f"{n/1024**2:.1f} MB"
 
 
 # ==========================================================
@@ -739,8 +768,6 @@ def ss_init():
         st.session_state.auth_key = None
     if "authed" not in st.session_state:
         st.session_state.authed = False
-    if "calendar_events" not in st.session_state:
-        st.session_state.calendar_events = []
 
 
 ss_init()
@@ -785,8 +812,8 @@ def nav_tiles():
             st.session_state.page = "NEWS"
             st.rerun()
     with c5:
-        if st.button("🗓️ Calendario", use_container_width=True):
-            st.session_state.page = "CAL"
+        if st.button("🧠 Psico", use_container_width=True):
+            st.session_state.page = "PSICO"
             st.rerun()
 
 
@@ -824,7 +851,6 @@ def auth_block():
                 st.session_state.auth_user = rec.get("display", u.strip() or key)
                 st.session_state.auth_key = key
                 st.session_state.history.matches = load_history_from_disk(key)
-                st.session_state.calendar_events = load_calendar_from_disk(key)
                 st.success("Acceso correcto ✅")
                 st.rerun()
             else:
@@ -859,7 +885,6 @@ def auth_block():
             users[key] = rec
             save_users(users)
             save_history_to_disk(key, [])
-            save_calendar_to_disk(key, [])
             st.success("Usuario creado ✅ Ya puedes entrar en la pestaña 'Entrar'.")
 
 
@@ -1074,74 +1099,37 @@ if st.session_state.page == "LIVE":
                     st.session_state._coach_text = ""
                     st.rerun()
 
-        # ==========================================================
-        # ✅ FIX AQUÍ: keys únicos para evitar StreamlitDuplicateElement
-        # ==========================================================
         if st.session_state.get("_edit_open", False):
             i = st.session_state.get("_edit_index", None)
             if i is not None and 0 <= i < len(history.matches):
                 m = history.matches[i]
-                uid = str(m.get("id", f"idx_{i}"))
-
                 with st.expander("✏️ Editar partido", expanded=True):
                     st.write("Modifica los campos y guarda.")
                     col1, col2 = st.columns(2, gap="small")
                     with col1:
-                        won_match = st.toggle(
-                            "Victoria",
-                            value=bool(m.get("won_match", False)),
-                            key=f"edit_won_{uid}",
-                        )
-                        sets_w = st.number_input(
-                            "Sets Yo",
-                            0, 5,
-                            value=int(m.get("sets_w", 0)),
-                            step=1,
-                            key=f"edit_sets_w_{uid}",
-                        )
-                        games_w = st.number_input(
-                            "Juegos Yo",
-                            0, 50,
-                            value=int(m.get("games_w", 0)),
-                            step=1,
-                            key=f"edit_games_w_{uid}",
-                        )
+                        won_match = st.toggle("Victoria", value=bool(m.get("won_match", False)), key=f"edit_won_{m.get('id',i)}")
+                        sets_w = st.number_input("Sets Yo", 0, 5, value=int(m.get("sets_w", 0)), step=1, key=f"edit_sw_{m.get('id',i)}")
+                        games_w = st.number_input("Juegos Yo", 0, 50, value=int(m.get("games_w", 0)), step=1, key=f"edit_gw_{m.get('id',i)}")
                     with col2:
-                        sets_l = st.number_input(
-                            "Sets Rival",
-                            0, 5,
-                            value=int(m.get("sets_l", 0)),
-                            step=1,
-                            key=f"edit_sets_l_{uid}",
-                        )
-                        games_l = st.number_input(
-                            "Juegos Rival",
-                            0, 50,
-                            value=int(m.get("games_l", 0)),
-                            step=1,
-                            key=f"edit_games_l_{uid}",
-                        )
+                        sets_l = st.number_input("Sets Rival", 0, 5, value=int(m.get("sets_l", 0)), step=1, key=f"edit_sl_{m.get('id',i)}")
+                        games_l = st.number_input("Juegos Rival", 0, 50, value=int(m.get("games_l", 0)), step=1, key=f"edit_gl_{m.get('id',i)}")
                         surface = st.selectbox(
                             "Superficie",
                             SURFACES,
                             index=SURFACES.index(m.get("surface", SURFACES[0])),
-                            key=f"edit_surface_{uid}",  # <- clave del fix
+                            key=f"edit_surface_{m.get('id',i)}",
                         )
 
-                    date = st.text_input(
-                        "Fecha (ISO)",
-                        value=str(m.get("date", "")),
-                        key=f"edit_date_{uid}",
-                    )
+                    date = st.text_input("Fecha (ISO)", value=str(m.get("date", "")), key=f"edit_date_{m.get('id',i)}")
 
                     bL, bR = st.columns(2, gap="small")
                     with bL:
-                        if st.button("Cancelar edición", use_container_width=True, key=f"edit_cancel_{uid}"):
+                        if st.button("Cancelar edición", use_container_width=True, key=f"edit_cancel_{m.get('id',i)}"):
                             st.session_state._edit_open = False
                             st.session_state._edit_index = None
                             st.rerun()
                     with bR:
-                        if st.button("Guardar cambios", use_container_width=True, key=f"edit_save_{uid}"):
+                        if st.button("Guardar cambios", use_container_width=True, key=f"edit_save_{m.get('id',i)}"):
                             m["won_match"] = bool(won_match)
                             m["sets_w"] = int(sets_w)
                             m["sets_l"] = int(sets_l)
@@ -1308,112 +1296,72 @@ elif st.session_state.page == "NEWS":
 
 
 # ==========================================================
-# PAGE: CALENDAR
+# PAGE: PSICO
 # ==========================================================
 else:
-    title_h("Calendario")
-    small_note("Eventos privados por usuario (se guardan y persisten al recargar).")
+    title_h("Psico")
+    small_note("Material desde un ZIP (descarga/preview). Sube el ZIP al repo y ajusta PSICO_ZIP_PATH si hace falta.")
 
-    events = st.session_state.calendar_events
+    if not os.path.exists(PSICO_ZIP_PATH):
+        st.warning(
+            f"No encuentro el ZIP en `PSICO_ZIP_PATH = {PSICO_ZIP_PATH}`.\n\n"
+            f"📌 Sube el archivo al repo (Streamlit Cloud) y pon aquí su ruta/nombre."
+        )
+        st.stop()
 
-    with st.expander("➕ Añadir evento", expanded=True):
-        c1, c2 = st.columns(2, gap="small")
-        with c1:
-            ev_title = st.text_input("Título", value="", placeholder="Ej: Entrenamiento / Torneo / Fisio")
-            ev_date = st.date_input("Fecha")
-        with c2:
-            ev_time = st.text_input("Hora (opcional)", value="", placeholder="Ej: 18:30")
-            ev_place = st.text_input("Lugar (opcional)", value="", placeholder="Ej: Pinter / Club / Donosti")
+    files = psico_list_files(PSICO_ZIP_PATH)
+    if not files:
+        st.info("El ZIP existe, pero no pude listar archivos (o está vacío).")
+        st.stop()
 
-        ev_notes = st.text_area("Notas (opcional)", value="", placeholder="Detalles del evento…", height=90)
+    cL, cR = st.columns([1, 1], gap="small")
+    with cL:
+        q = st.text_input("Buscar", value="", placeholder="filtra por nombre...")
+    with cR:
+        ext_opts = sorted({f["ext"] for f in files if f.get("ext")})
+        ext = st.selectbox("Tipo", ["Todos", *ext_opts], index=0)
 
-        if st.button("✅ Guardar evento", use_container_width=True):
-            if not ev_title.strip():
-                st.error("El título no puede estar vacío.")
-            else:
-                new_ev = {
-                    "id": f"e_{datetime.now().timestamp()}",
-                    "title": ev_title.strip(),
-                    "date": ev_date.isoformat(),
-                    "time": ev_time.strip(),
-                    "place": ev_place.strip(),
-                    "notes": ev_notes.strip(),
-                    "created": datetime.now().isoformat(timespec="seconds"),
-                }
-                events.append(new_ev)
-                st.session_state.calendar_events = events
-                save_calendar_to_disk(user_key, events)
-                st.success("Evento guardado ✅")
-                st.rerun()
+    # filtra
+    view = files
+    if q.strip():
+        qq = q.strip().lower()
+        view = [f for f in view if qq in f["name"].lower()]
+    if ext != "Todos":
+        view = [f for f in view if f.get("ext") == ext]
 
     st.divider()
+    st.write(f"**Archivos:** {len(view)}")
 
-    if not events:
-        st.info("Aún no hay eventos.")
-    else:
-        def _sort_key(ev):
-            return (ev.get("date", "9999-99-99"), ev.get("time", ""))
-        ordered = sorted(events, key=_sort_key)
+    # listado
+    for i, f in enumerate(view):
+        name = f["name"]
+        size = _human_size(f["size"])
+        mt = mimetypes.guess_type(name)[0] or "application/octet-stream"
 
-        for idx, ev in enumerate(ordered):
-            header = f"📌 {ev.get('title','(sin título)')} · {ev.get('date','')} {ev.get('time','')}".strip()
-            with st.expander(header, expanded=False):
-                if ev.get("place"):
-                    st.write(f"**Lugar:** {ev.get('place')}")
-                if ev.get("notes"):
-                    small_note(ev.get("notes"))
+        with st.expander(f"📄 {name}  ·  {size}", expanded=False):
+            # preview básico solo para texto/markdown
+            ext_ = (f.get("ext") or "").lower()
+            can_preview = ext_ in [".txt", ".md", ".markdown", ".csv", ".json", ".py", ".yaml", ".yml"]
+            if can_preview:
+                try:
+                    raw = psico_read_file(PSICO_ZIP_PATH, name)
+                    txt = raw.decode("utf-8", errors="replace")
+                    st.code(txt[:4000], language="text")
+                    if len(txt) > 4000:
+                        small_note("Preview recortado (solo primeros 4000 caracteres). Descarga para ver completo.")
+                except Exception:
+                    st.info("No pude previsualizar este archivo, pero puedes descargarlo.")
 
-                b1, b2 = st.columns(2, gap="small")
-                with b1:
-                    if st.button("✏️ Editar", use_container_width=True, key=f"cal_edit_btn_{ev.get('id', idx)}"):
-                        st.session_state._cal_edit_id = ev.get("id")
-                        st.session_state._cal_edit_open = True
-                        st.rerun()
-
-                with b2:
-                    if st.button("🗑️ Borrar", use_container_width=True, key=f"cal_del_btn_{ev.get('id', idx)}"):
-                        events = [x for x in events if x.get("id") != ev.get("id")]
-                        st.session_state.calendar_events = events
-                        save_calendar_to_disk(user_key, events)
-                        st.success("Evento borrado ✅")
-                        st.rerun()
-
-        if st.session_state.get("_cal_edit_open", False):
-            edit_id = st.session_state.get("_cal_edit_id", None)
-            current = next((x for x in events if x.get("id") == edit_id), None)
-            if current:
-                with st.expander("✏️ Editar evento", expanded=True):
-                    c1, c2 = st.columns(2, gap="small")
-                    with c1:
-                        t = st.text_input("Título", value=current.get("title", ""))
-                        d = st.text_input("Fecha (YYYY-MM-DD)", value=current.get("date", ""))
-                    with c2:
-                        tm = st.text_input("Hora", value=current.get("time", ""))
-                        pl = st.text_input("Lugar", value=current.get("place", ""))
-
-                    nt = st.text_area("Notas", value=current.get("notes", ""), height=90)
-
-                    x1, x2 = st.columns(2, gap="small")
-                    with x1:
-                        if st.button("Cancelar", use_container_width=True):
-                            st.session_state._cal_edit_open = False
-                            st.session_state._cal_edit_id = None
-                            st.rerun()
-                    with x2:
-                        if st.button("Guardar cambios", use_container_width=True):
-                            current["title"] = (t or "").strip()
-                            current["date"] = (d or "").strip()
-                            current["time"] = (tm or "").strip()
-                            current["place"] = (pl or "").strip()
-                            current["notes"] = (nt or "").strip()
-
-                            events2 = []
-                            for x in events:
-                                events2.append(current if x.get("id") == edit_id else x)
-                            st.session_state.calendar_events = events2
-                            save_calendar_to_disk(user_key, events2)
-
-                            st.session_state._cal_edit_open = False
-                            st.session_state._cal_edit_id = None
-                            st.success("Evento actualizado ✅")
-                            st.rerun()
+            # descarga
+            try:
+                data = psico_read_file(PSICO_ZIP_PATH, name)
+                st.download_button(
+                    "⬇️ Descargar",
+                    data=data,
+                    file_name=os.path.basename(name),
+                    mime=mt,
+                    use_container_width=True,
+                    key=f"psico_dl_{i}_{hash(name)}",
+                )
+            except Exception as e:
+                st.error(f"No se pudo preparar descarga: {e}")
