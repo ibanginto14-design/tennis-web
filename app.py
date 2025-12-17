@@ -4,6 +4,8 @@ import json
 import base64
 import secrets
 import hashlib
+import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import datetime
@@ -119,6 +121,86 @@ def save_history_to_disk(user_key: str, matches: list) -> None:
     payload = {"matches": matches}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+# ==========================================================
+# NOTICIAS (RSS)
+# ==========================================================
+NEWS_SOURCES = [
+    ("ATP Tour", "https://www.atptour.com/en/media/rss-feed/xml-feed"),
+    ("WTA", "https://www.wtatennis.com/rss"),
+    ("ITF", "https://www.itftennis.com/en/news/rss/"),
+    ("BBC Tennis", "https://feeds.bbci.co.uk/sport/tennis/rss.xml"),
+]
+
+
+def _first_text(elem, tags):
+    for t in tags:
+        x = elem.find(t)
+        if x is not None and x.text:
+            return x.text.strip()
+    return ""
+
+
+def _attr(elem, tag, attr):
+    x = elem.find(tag)
+    if x is not None and x.attrib.get(attr):
+        return x.attrib.get(attr)
+    return ""
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_tennis_news(max_items: int = 15):
+    items = []
+    for source_name, url in NEWS_SOURCES:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Streamlit TennisStats)"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = resp.read()
+
+            root = ET.fromstring(data)
+            # RSS
+            channel = root.find("channel")
+            if channel is not None:
+                for it in channel.findall("item"):
+                    title = _first_text(it, ["title"])
+                    link = _first_text(it, ["link"])
+                    pub = _first_text(it, ["pubDate", "{http://purl.org/dc/elements/1.1/}date"])
+                    if title and link:
+                        items.append(
+                            {"source": source_name, "title": title, "link": link, "published": pub}
+                        )
+                continue
+
+            # Atom (feed/entry)
+            if root.tag.endswith("feed"):
+                ns = {"a": "http://www.w3.org/2005/Atom"}
+                for entry in root.findall("a:entry", ns):
+                    title = _first_text(entry, ["{http://www.w3.org/2005/Atom}title"])
+                    link = _attr(entry, "{http://www.w3.org/2005/Atom}link", "href")
+                    pub = _first_text(entry, ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"])
+                    if title and link:
+                        items.append(
+                            {"source": source_name, "title": title, "link": link, "published": pub}
+                        )
+        except Exception:
+            # si una fuente falla, seguimos con las demás
+            continue
+
+    # sin ordenar por fecha (formatos variados); prioriza variedad y recencia típica de RSS
+    # elimina duplicados por link
+    seen = set()
+    uniq = []
+    for it in items:
+        if it["link"] in seen:
+            continue
+        seen.add(it["link"])
+        uniq.append(it)
+
+    return uniq[:max_items]
 
 
 # ==========================================================
@@ -601,20 +683,9 @@ def coach_summary_from_match(m: dict) -> str:
         strengths.append("sacaste puntos provocando error del rival: buena consistencia.")
 
     plan = []
-    if "reducir errores no forzados (ENF) en momentos clave." in focus:
-        plan.append("1) Prioriza 2-3 pelotas de seguridad antes de acelerar (evita el 'todo o nada').")
-    else:
-        plan.append("1) Mantén tu patrón principal (consistencia + ataque cuando la bola sea clara).")
-
-    if any("presión" in x for x in focus):
-        plan.append("2) En deuce/tiebreak: rutina corta (respira, objetivo simple, juega al %).")
-    else:
-        plan.append("2) Sigue usando tu rutina en puntos importantes: claridad de objetivo por punto.")
-
-    if any("dobles faltas" in x for x in focus):
-        plan.append("3) Saque: 1º con dirección + 2º con más efecto/altura; mismo ritual siempre.")
-    else:
-        plan.append("3) Ajusta el saque según rival: alterna direcciones y busca el primer golpe tras el saque.")
+    plan.append("1) Prioriza consistencia (altura/profundidad) y acelera solo con bola clara.")
+    plan.append("2) En puntos importantes: rutina corta (respira, objetivo simple, juega al %).")
+    plan.append("3) Saque: 1º con dirección; 2º con más efecto/altura, mismo ritual siempre.")
 
     s_txt = " ".join(strengths) if strengths else "buen partido en líneas generales."
     f_txt = " ".join(focus) if focus else "pocos puntos débiles claros: sigue consolidando lo que funcionó."
@@ -675,7 +746,7 @@ def title_h(txt: str):
 
 def nav_tiles():
     st.markdown("<div class='navwrap'><div class='navtitle'>Página</div></div>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3, gap="small")
+    c1, c2, c3, c4 = st.columns(4, gap="small")
     with c1:
         if st.button("🎾 LIVE", use_container_width=True):
             st.session_state.page = "LIVE"
@@ -687,6 +758,10 @@ def nav_tiles():
     with c3:
         if st.button("📊 Stats", use_container_width=True):
             st.session_state.page = "STATS"
+            st.rerun()
+    with c4:
+        if st.button("📰 Noticias", use_container_width=True):
+            st.session_state.page = "NEWS"
             st.rerun()
 
 
@@ -890,7 +965,6 @@ if st.session_state.page == "LIVE":
             gw = st.number_input("Juegos Yo", 0, 50, value=int(live.state.games_me), step=1)
             gl = st.number_input("Juegos Rival", 0, 50, value=int(live.state.games_opp), step=1)
 
-            # ✅ ARREGLO ÚNICO: SURACES -> SURFACES
             surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURFACES.index(live.surface))
 
             s_left, s_right = st.columns(2, gap="small")
@@ -1072,7 +1146,7 @@ elif st.session_state.page == "ANALYSIS":
 # ==========================================================
 # PAGE: STATS
 # ==========================================================
-else:
+elif st.session_state.page == "STATS":
     title_h("Stats")
 
     colF1, colF2 = st.columns([1.1, 0.9], gap="small")
@@ -1130,3 +1204,35 @@ else:
         t_ = surf.get(srf, {}).get("t", 0)
         pct = (w / t_ * 100.0) if t_ else 0.0
         st.write(f"**{srf}:** {pct:.0f}%  ({w} de {t_})")
+
+
+# ==========================================================
+# PAGE: NEWS
+# ==========================================================
+else:
+    title_h("Noticias (tenis)")
+    small_note("Últimas noticias desde fuentes públicas (RSS). Si alguna fuente falla, se muestra el resto.")
+
+    cL, cR = st.columns([1, 1], gap="small")
+    with cL:
+        max_items = st.selectbox("Cuántas noticias", [8, 12, 15, 20], index=1)
+    with cR:
+        if st.button("🔄 Actualizar", use_container_width=True):
+            fetch_tennis_news.clear()
+            st.rerun()
+
+    news = fetch_tennis_news(max_items=int(max_items))
+
+    st.divider()
+    if not news:
+        st.info("No se pudieron cargar noticias ahora mismo. Prueba a recargar en unos segundos.")
+    else:
+        for it in news:
+            src = it.get("source", "—")
+            title = it.get("title", "Noticia")
+            link = it.get("link", "#")
+            pub = it.get("published", "")
+            if pub:
+                st.markdown(f"- **[{title}]({link})**  \n  <span class='small-note'>{src} · {pub}</span>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"- **[{title}]({link})**  \n  <span class='small-note'>{src}</span>", unsafe_allow_html=True)
