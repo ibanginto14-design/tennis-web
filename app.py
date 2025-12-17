@@ -1,9 +1,13 @@
+import os
+import re
 import json
+import base64
+import secrets
+import hashlib
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import datetime
 from functools import lru_cache
-from pathlib import Path
 
 import streamlit as st
 
@@ -31,83 +35,86 @@ div[data-baseweb="input"] input {padding-top: 0.45rem; padding-bottom: 0.45rem;}
 .badge {display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; background: #f1f3f5; margin-right: .35rem; margin-bottom: .35rem;}
 hr {margin: 0.55rem 0;}
 
-/* ============================
-   NAV en "casillas" (tarjetas)
-   ============================ */
-.nav-wrap {margin: 0.35rem 0 0.65rem 0;}
-.nav-title {font-weight: 800; margin-bottom: 0.3rem;}
-.nav-chip {font-size: 0.85rem; color: rgba(0,0,0,.55); margin-bottom: 0.55rem;}
-/* Hacemos que los botones parezcan tarjetas */
-div[data-testid="column"] .nav-card button{
-  width: 100% !important;
-  border-radius: 16px !important;
-  padding: 0.85rem 0.9rem !important;
-  font-weight: 900 !important;
-  border: 1px solid rgba(0,0,0,0.10) !important;
-  background: #ffffff !important;
-}
-div[data-testid="column"] .nav-card button:hover{
-  border-color: rgba(0,0,0,0.22) !important;
-}
-div[data-testid="column"] .nav-card.selected button{
-  background: #111 !important;
-  color: #fff !important;
-  border-color: #111 !important;
-}
-
-/* Compacta subheaders */
-h2, h3 {margin-top: 0.35rem !important;}
+/* ======= NAV "casillas" (no arriba) ======= */
+.navwrap {margin: 0.4rem 0 0.8rem 0;}
+.navtitle {font-weight: 900; font-size: 1.15rem; margin-bottom: .3rem;}
 </style>
 """
 st.markdown(COMPACT_CSS, unsafe_allow_html=True)
 
 
 # ==========================================================
-# PERSISTENCIA (historial en disco)
+# STORAGE (multi-usuario privado por fichero)
 # ==========================================================
-HISTORY_FILE = Path("history_store.json")
+DATA_DIR = "data"
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+HIST_DIR = os.path.join(DATA_DIR, "histories")
 
+def ensure_dirs():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(HIST_DIR, exist_ok=True)
 
-def _sanitize_matches(matches):
-    """Asegura que sea una lista de dicts y que cada partido tenga id."""
-    if not isinstance(matches, list):
-        return []
-    out = []
-    for mm in matches:
-        if not isinstance(mm, dict):
-            continue
-        if "id" not in mm:
-            mm["id"] = f"m_{datetime.now().timestamp()}"
-        out.append(mm)
-    return out
+def safe_user_key(username: str) -> str:
+    u = (username or "").strip().lower()
+    u = re.sub(r"[^a-z0-9_\-\.]", "_", u)
+    u = re.sub(r"_+", "_", u).strip("_")
+    return u[:40] if u else ""
 
+def _b64e(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
 
-def load_history_from_disk():
-    if not HISTORY_FILE.exists():
+def _b64d(s: str) -> bytes:
+    s = s + "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s.encode("utf-8"))
+
+def hash_pin(pin: str, salt_b: bytes) -> str:
+    # PBKDF2-HMAC (simple y suficiente para PINs en esta app)
+    dk = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt_b, 200_000)
+    return _b64e(dk)
+
+def load_users() -> dict:
+    ensure_dirs()
+    if not os.path.exists(USERS_FILE):
+        return {}
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+def save_users(users: dict) -> None:
+    ensure_dirs()
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+def history_path_for(user_key: str) -> str:
+    ensure_dirs()
+    return os.path.join(HIST_DIR, f"history__{user_key}.json")
+
+def load_history_from_disk(user_key: str) -> list:
+    path = history_path_for(user_key)
+    if not os.path.exists(path):
         return []
     try:
-        obj = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
         matches = obj.get("matches", [])
-        return _sanitize_matches(matches)
+        return matches if isinstance(matches, list) else []
     except Exception:
-        # si se corrompe el archivo, no rompemos la app
         return []
 
-
-def save_history_to_disk(matches):
-    try:
-        payload = {"matches": _sanitize_matches(matches)}
-        HISTORY_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        # no hacemos st.error aquí para no ensuciar la UI continuamente
-        pass
+def save_history_to_disk(user_key: str, matches: list) -> None:
+    path = history_path_for(user_key)
+    payload = {"matches": matches}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 # ==========================================================
 # LÓGICA TENIS (MARCADOR)
 # ==========================================================
 POINT_LABELS = {0: "0", 1: "15", 2: "30", 3: "40"}
-
 
 def game_point_label(p_me: int, p_opp: int) -> str:
     if p_me >= 3 and p_opp >= 3:
@@ -119,14 +126,11 @@ def game_point_label(p_me: int, p_opp: int) -> str:
             return "40-AD"
     return f"{POINT_LABELS.get(p_me, '40')}-{POINT_LABELS.get(p_opp, '40')}"
 
-
 def won_game(p_me: int, p_opp: int) -> bool:
     return p_me >= 4 and (p_me - p_opp) >= 2
 
-
 def won_tiebreak(p_me: int, p_opp: int) -> bool:
     return p_me >= 7 and (p_me - p_opp) >= 2
-
 
 def is_set_over(g_me: int, g_opp: int) -> bool:
     if g_me >= 6 and (g_me - g_opp) >= 2:
@@ -141,7 +145,6 @@ def is_set_over(g_me: int, g_opp: int) -> bool:
 # ==========================================================
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
-
 
 @lru_cache(maxsize=None)
 def _prob_game_from(p_rounded: float, a: int, b: int) -> float:
@@ -165,7 +168,6 @@ def _prob_game_from(p_rounded: float, a: int, b: int) -> float:
 
     return p * _prob_game_from(p_rounded, a + 1, b) + q * _prob_game_from(p_rounded, a, b + 1)
 
-
 @lru_cache(maxsize=None)
 def _prob_tiebreak_from(p_rounded: float, a: int, b: int) -> float:
     p = max(1e-6, min(1 - 1e-6, float(p_rounded)))
@@ -188,7 +190,6 @@ def _prob_tiebreak_from(p_rounded: float, a: int, b: int) -> float:
 
     return p * _prob_tiebreak_from(p_rounded, a + 1, b) + q * _prob_tiebreak_from(p_rounded, a, b + 1)
 
-
 @lru_cache(maxsize=None)
 def _prob_set_from(p_rounded: float, g_me: int, g_opp: int, pts_me: int, pts_opp: int, in_tb: bool) -> float:
     if is_set_over(g_me, g_opp):
@@ -208,7 +209,6 @@ def _prob_set_from(p_rounded: float, g_me: int, g_opp: int, pts_me: int, pts_opp
 
     return p_game * after_game(g_me + 1, g_opp) + (1 - p_game) * after_game(g_me, g_opp + 1)
 
-
 @lru_cache(maxsize=None)
 def _prob_match_bo3(
     p_rounded: float,
@@ -226,10 +226,8 @@ def _prob_match_bo3(
         return 0.0
 
     p_set = _prob_set_from(p_rounded, g_me, g_opp, pts_me, pts_opp, in_tb)
-
     win_state = (p_rounded, sets_me + 1, sets_opp, 0, 0, 0, 0, False)
     lose_state = (p_rounded, sets_me, sets_opp + 1, 0, 0, 0, 0, False)
-
     return p_set * _prob_match_bo3(*win_state) + (1 - p_set) * _prob_match_bo3(*lose_state)
 
 
@@ -245,7 +243,6 @@ class LiveState:
     pts_me: int = 0
     pts_opp: int = 0
     in_tiebreak: bool = False
-
 
 class LiveMatch:
     def __init__(self):
@@ -287,11 +284,7 @@ class LiveMatch:
         p_r = round(p, 3)
         st_ = self.state
         return _prob_match_bo3(
-            p_r,
-            st_.sets_me, st_.sets_opp,
-            st_.games_me, st_.games_opp,
-            st_.pts_me, st_.pts_opp,
-            st_.in_tiebreak
+            p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak
         )
 
     def win_prob_series(self):
@@ -343,7 +336,6 @@ class LiveMatch:
 
     def add_point(self, result: str, meta: dict):
         self.snapshot()
-
         before = deepcopy(self.state)
         set_idx = before.sets_me + before.sets_opp + 1
         is_pressure = bool(before.in_tiebreak or (before.pts_me >= 3 and before.pts_opp >= 3))
@@ -415,7 +407,7 @@ class LiveMatch:
         }
 
         pressure_total = sum(1 for p in self.points if p.get("pressure"))
-        pressure_won = sum(1 for p in self.points if p.get("pressure") and p["result"] == "win")
+        pressure_won = sum(1 for p in self.points if p.get("pressure") and p.get("result") == "win")
 
         for p in self.points:
             f = p.get("finish")
@@ -531,24 +523,30 @@ class MatchHistory:
 
 
 # ==========================================================
-# SESSION STATE INIT (con carga persistente)
+# SESSION STATE INIT
 # ==========================================================
 def ss_init():
     if "live" not in st.session_state:
         st.session_state.live = LiveMatch()
+
+    # historial y usuario se cargan tras login
     if "history" not in st.session_state:
         st.session_state.history = MatchHistory()
-        # 👇 CARGA PERSISTENTE DEL HISTORIAL
-        st.session_state.history.matches = load_history_from_disk()
+
     if "finish" not in st.session_state:
         st.session_state.finish = None
+
     if "page" not in st.session_state:
         st.session_state.page = "LIVE"
 
+    if "auth_user" not in st.session_state:
+        st.session_state.auth_user = None  # username "display"
+    if "auth_key" not in st.session_state:
+        st.session_state.auth_key = None   # user_key "safe"
+    if "authed" not in st.session_state:
+        st.session_state.authed = False
 
 ss_init()
-live: LiveMatch = st.session_state.live
-history: MatchHistory = st.session_state.history
 
 SURFACES = ("Tierra batida", "Pista rápida", "Hierba", "Indoor")
 FINISH_ITEMS = [
@@ -565,45 +563,137 @@ FINISH_ITEMS = [
 def small_note(txt: str):
     st.markdown(f"<div class='small-note'>{txt}</div>", unsafe_allow_html=True)
 
-
 def title_h(txt: str):
     st.markdown(f"## {txt}")
 
-
-# ==========================================================
-# NAV (CASILLAS clicables - NO ARRIBA)
-# ==========================================================
-def nav_boxes():
-    st.markdown("<div class='nav-wrap'>", unsafe_allow_html=True)
-    st.markdown("<div class='nav-title'>Páginas</div>", unsafe_allow_html=True)
-    st.markdown("<div class='nav-chip'>Clica una casilla para cambiar</div>", unsafe_allow_html=True)
-
+def nav_tiles():
+    st.markdown("<div class='navwrap'><div class='navtitle'>Página</div></div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3, gap="small")
+    with c1:
+        if st.button("🎾 LIVE", use_container_width=True):
+            st.session_state.page = "LIVE"
+            st.rerun()
+    with c2:
+        if st.button("📈 Analysis", use_container_width=True):
+            st.session_state.page = "ANALYSIS"
+            st.rerun()
+    with c3:
+        if st.button("📊 Stats", use_container_width=True):
+            st.session_state.page = "STATS"
+            st.rerun()
 
-    def nav_btn(col, key_page: str, label: str):
-        cls = "nav-card selected" if st.session_state.page == key_page else "nav-card"
-        with col:
-            st.markdown(f"<div class='{cls} nav-card'>", unsafe_allow_html=True)
-            if st.button(label, use_container_width=True, key=f"nav_{key_page}"):
-                st.session_state.page = key_page
+
+# ==========================================================
+# AUTH UI
+# ==========================================================
+def auth_block():
+    st.title("🎾 TennisStats")
+    st.caption("Acceso privado por usuario (cada uno ve su propio historial).")
+
+    users = load_users()
+
+    tab_login, tab_register = st.tabs(["🔑 Entrar", "🆕 Crear usuario"])
+
+    with tab_login:
+        u = st.text_input("Usuario", value="", placeholder="Ej: ruben")
+        pin = st.text_input("PIN", value="", type="password", placeholder="4-12 dígitos")
+        if st.button("Entrar", use_container_width=True):
+            key = safe_user_key(u)
+            if not key or key not in users:
+                st.error("Usuario no existe.")
+                return
+            if not pin:
+                st.error("Introduce el PIN.")
+                return
+            rec = users[key]
+            try:
+                salt = _b64d(rec["salt"])
+                want = rec["hash"]
+                got = hash_pin(pin, salt)
+            except Exception:
+                st.error("Error leyendo credenciales. (users.json corrupto?)")
+                return
+            if secrets.compare_digest(got, want):
+                st.session_state.authed = True
+                st.session_state.auth_user = rec.get("display", u.strip() or key)
+                st.session_state.auth_key = key
+
+                # cargar historial de ese usuario a session_state
+                st.session_state.history.matches = load_history_from_disk(key)
+                st.success("Acceso correcto ✅")
                 st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.error("PIN incorrecto.")
 
-    nav_btn(c1, "LIVE", "🎾 LIVE")
-    nav_btn(c2, "ANALYSIS", "📈 Analysis")
-    nav_btn(c3, "STATS", "📊 Stats")
+    with tab_register:
+        new_u = st.text_input("Nuevo usuario", value="", placeholder="Solo letras/números (mejor corto)")
+        new_pin = st.text_input("Nuevo PIN", value="", type="password", placeholder="4-12 dígitos")
+        new_pin2 = st.text_input("Repite PIN", value="", type="password")
+        if st.button("Crear usuario", use_container_width=True):
+            key = safe_user_key(new_u)
+            if not key:
+                st.error("El usuario no puede estar vacío.")
+                return
+            if key in users:
+                st.error("Ese usuario ya existe.")
+                return
+            if not (new_pin.isdigit() and 4 <= len(new_pin) <= 12):
+                st.error("El PIN debe ser numérico (4 a 12 dígitos).")
+                return
+            if new_pin != new_pin2:
+                st.error("Los PIN no coinciden.")
+                return
 
-    st.markdown("</div>", unsafe_allow_html=True)
+            salt = os.urandom(16)
+            rec = {
+                "display": new_u.strip(),
+                "salt": _b64e(salt),
+                "hash": hash_pin(new_pin, salt),
+                "created": datetime.now().isoformat(timespec="seconds"),
+            }
+            users[key] = rec
+            save_users(users)
+
+            # crear historial vacío
+            save_history_to_disk(key, [])
+
+            st.success("Usuario creado ✅ Ya puedes entrar en la pestaña 'Entrar'.")
 
 
-nav_boxes()
+# ==========================================================
+# MAIN: requiere login
+# ==========================================================
+if not st.session_state.authed:
+    auth_block()
+    st.stop()
+
+# ya autenticado
+live: LiveMatch = st.session_state.live
+history: MatchHistory = st.session_state.history
+user_key = st.session_state.auth_key
+user_display = st.session_state.auth_user
+
+topL, topR = st.columns([1.2, 0.8], gap="small")
+with topL:
+    st.markdown(f"**👤 Usuario:** `{user_display}`")
+with topR:
+    if st.button("🚪 Salir", use_container_width=True):
+        st.session_state.authed = False
+        st.session_state.auth_user = None
+        st.session_state.auth_key = None
+        st.session_state.page = "LIVE"
+        st.session_state.finish = None
+        # (no borramos ficheros)
+        st.rerun()
+
+nav_tiles()
 st.divider()
 
 
 # ==========================================================
-# PÁGINA: LIVE
+# PAGE: LIVE
 # ==========================================================
-def render_live():
+if st.session_state.page == "LIVE":
     title_h("LIVE MATCH")
 
     colA, colB = st.columns([1.15, 1.0], gap="small")
@@ -686,7 +776,9 @@ def render_live():
             live.undo()
             st.rerun()
     with a2:
-        st.button("📈 Ir a Analysis", use_container_width=True, disabled=True)
+        if st.button("📈 Ir a Analysis", use_container_width=True):
+            st.session_state.page = "ANALYSIS"
+            st.rerun()
     with a3:
         if st.button("🏁 Finalizar", use_container_width=True):
             st.session_state._open_finish = True
@@ -713,14 +805,15 @@ def render_live():
                     history.add({
                         "id": f"m_{datetime.now().timestamp()}",
                         "date": datetime.now().isoformat(timespec="seconds"),
-                        "won_match": won_match,
+                        "won_match": bool(won_match),
                         "sets_w": int(sw), "sets_l": int(sl),
                         "games_w": int(gw), "games_l": int(gl),
                         "surface": surf_save,
                         **report,
                     })
-                    # 👇 GUARDA EN DISCO
-                    save_history_to_disk(history.matches)
+
+                    # ✅ persistir en disco por usuario
+                    save_history_to_disk(user_key, history.matches)
 
                     live.surface = surf_save
                     live.reset()
@@ -732,13 +825,12 @@ def render_live():
     st.divider()
 
     st.subheader("Exportar", anchor=False)
-    small_note("Aquí ves tu historial, puedes editarlo/borrarlo y exportarlo/importarlo en JSON.")
+    small_note("Tu historial privado (solo tu usuario). Puedes editar/borrar y exportar/importar en JSON.")
 
     if not history.matches:
         st.info("Aún no hay partidos guardados.")
     else:
         matches = list(reversed(history.matches))
-
         for idx, m in enumerate(matches):
             real_i = len(history.matches) - 1 - idx
             date = m.get("date", "")
@@ -764,8 +856,7 @@ def render_live():
                 with e2:
                     if st.button("🗑️ Borrar", key=f"del_btn_{m.get('id',real_i)}", use_container_width=True):
                         history.matches.pop(real_i)
-                        # 👇 GUARDA EN DISCO
-                        save_history_to_disk(history.matches)
+                        save_history_to_disk(user_key, history.matches)
                         st.success("Partido borrado.")
                         st.rerun()
 
@@ -803,8 +894,9 @@ def render_live():
                             m["surface"] = surface
                             m["date"] = date
                             history.matches[i] = m
-                            # 👇 GUARDA EN DISCO
-                            save_history_to_disk(history.matches)
+
+                            save_history_to_disk(user_key, history.matches)
+
                             st.session_state._edit_open = False
                             st.session_state._edit_index = None
                             st.success("Cambios guardados ✅")
@@ -815,7 +907,7 @@ def render_live():
     st.download_button(
         "⬇️ Descargar historial (JSON)",
         data=export_json,
-        file_name="tennis_history.json",
+        file_name=f"tennis_history__{user_key}.json",
         mime="application/json",
         use_container_width=True,
     )
@@ -827,10 +919,11 @@ def render_live():
             matches = obj.get("matches", [])
             if not isinstance(matches, list):
                 raise ValueError("Formato incorrecto: 'matches' debe ser una lista.")
-            matches = _sanitize_matches(matches)
+            for mm in matches:
+                if "id" not in mm:
+                    mm["id"] = f"m_{datetime.now().timestamp()}"
             history.matches = matches
-            # 👇 GUARDA EN DISCO
-            save_history_to_disk(history.matches)
+            save_history_to_disk(user_key, history.matches)
             st.success("Historial importado ✅")
             st.rerun()
         except Exception as e:
@@ -838,9 +931,9 @@ def render_live():
 
 
 # ==========================================================
-# PÁGINA: ANALYSIS
+# PAGE: ANALYSIS
 # ==========================================================
-def render_analysis():
+elif st.session_state.page == "ANALYSIS":
     title_h("Analysis")
 
     p_point = live.estimate_point_win_prob()
@@ -864,9 +957,9 @@ def render_analysis():
 
 
 # ==========================================================
-# PÁGINA: STATS
+# PAGE: STATS
 # ==========================================================
-def render_stats():
+else:
     title_h("Stats")
 
     colF1, colF2 = st.columns([1.1, 0.9], gap="small")
@@ -925,17 +1018,3 @@ def render_stats():
         t_ = surf.get(srf, {}).get("t", 0)
         pct = (w / t_ * 100.0) if t_ else 0.0
         st.write(f"**{srf}:** {pct:.0f}%  ({w} de {t_})")
-
-
-# ==========================================================
-# ROUTER (según casilla clicada)
-# ==========================================================
-if st.session_state.page == "LIVE":
-    render_live()
-elif st.session_state.page == "ANALYSIS":
-    render_analysis()
-elif st.session_state.page == "STATS":
-    render_stats()
-else:
-    st.session_state.page = "LIVE"
-    st.rerun()
