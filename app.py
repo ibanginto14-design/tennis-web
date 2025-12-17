@@ -68,7 +68,6 @@ def _b64d(s: str) -> bytes:
     return base64.urlsafe_b64decode(s.encode("utf-8"))
 
 def hash_pin(pin: str, salt_b: bytes) -> str:
-    # PBKDF2-HMAC (simple y suficiente para PINs en esta app)
     dk = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt_b, 200_000)
     return _b64e(dk)
 
@@ -528,23 +527,22 @@ class MatchHistory:
 def ss_init():
     if "live" not in st.session_state:
         st.session_state.live = LiveMatch()
-
-    # historial y usuario se cargan tras login
     if "history" not in st.session_state:
         st.session_state.history = MatchHistory()
-
     if "finish" not in st.session_state:
         st.session_state.finish = None
-
     if "page" not in st.session_state:
         st.session_state.page = "LIVE"
-
     if "auth_user" not in st.session_state:
-        st.session_state.auth_user = None  # username "display"
+        st.session_state.auth_user = None
     if "auth_key" not in st.session_state:
-        st.session_state.auth_key = None   # user_key "safe"
+        st.session_state.auth_key = None
     if "authed" not in st.session_state:
         st.session_state.authed = False
+
+    # ✅ nuevo: estado del resumen
+    if "_open_summary" not in st.session_state:
+        st.session_state._open_summary = False
 
 ss_init()
 
@@ -558,7 +556,6 @@ FINISH_ITEMS = [
     ("opp_error", "Error rival"),
     ("opp_winner", "Winner rival"),
 ]
-
 
 def small_note(txt: str):
     st.markdown(f"<div class='small-note'>{txt}</div>", unsafe_allow_html=True)
@@ -581,6 +578,96 @@ def nav_tiles():
         if st.button("📊 Stats", use_container_width=True):
             st.session_state.page = "STATS"
             st.rerun()
+
+# ==========================================================
+# RESUMEN LIVE (NUEVO)
+# ==========================================================
+def _top_finishes(fin: dict, k: int = 3):
+    items = [(name, int(fin.get(name, 0) or 0)) for name in fin.keys()]
+    items.sort(key=lambda x: x[1], reverse=True)
+    return [x for x in items if x[1] > 0][:k]
+
+def build_live_summary_text(live: LiveMatch) -> str:
+    st_ = live.state
+    total, won, pct = live.points_stats()
+    p_point = live.estimate_point_win_prob()
+    p_match = live.match_win_prob() * 100.0
+    report = live.match_summary()
+
+    pts_label = f"TB {st_.pts_me}-{st_.pts_opp}" if st_.in_tiebreak else game_point_label(st_.pts_me, st_.pts_opp)
+
+    pressure_total = report.get("pressure_total", 0)
+    pressure_won = report.get("pressure_won", 0)
+    pressure_pct = report.get("pressure_pct", 0.0)
+
+    fin = report.get("finishes", {}) or {}
+    top = _top_finishes(fin, 4)
+
+    # Heurísticas sencillas (orientativas)
+    if total < 6:
+        ritmo = "Muestra aún pequeña; el resumen es orientativo."
+    elif pct >= 58:
+        ritmo = "Dominio general del partido por puntos."
+    elif pct <= 42:
+        ritmo = "El rival está imponiendo el ritmo por puntos."
+    else:
+        ritmo = "Partido bastante igualado por puntos."
+
+    if pressure_total >= 6:
+        if pressure_pct >= 60:
+            clutch = "Buen rendimiento en momentos de presión (deuce/tiebreak)."
+        elif pressure_pct <= 40:
+            clutch = "A mejorar la gestión de momentos de presión (deuce/tiebreak)."
+        else:
+            clutch = "Rendimiento medio en presión; margen de mejora."
+    elif pressure_total > 0:
+        clutch = "Hay pocos puntos de presión aún; sigue registrando."
+    else:
+        clutch = "Aún no ha habido puntos de presión registrados."
+
+    # Señales por finishes
+    winners = int(fin.get("winner", 0) or 0)
+    unf = int(fin.get("unforced", 0) or 0)
+    df = int(fin.get("double_fault", 0) or 0)
+    ace = int(fin.get("ace", 0) or 0)
+
+    focus = []
+    if winners > unf + 2:
+        focus.append("Tu punto fuerte está siendo la **iniciativa (winners)**.")
+    if unf >= winners and total >= 8:
+        focus.append("Ojo: hay bastantes **errores no forzados**; prueba a subir % de primer golpe seguro.")
+    if df >= 2:
+        focus.append("Atención a la **doble falta**: simplifica segundo saque / rutina.")
+    if ace >= 2:
+        focus.append("El **saque** está sumando puntos gratis.")
+
+    if not focus:
+        focus.append("Sigue registrando finishes para un diagnóstico más fino.")
+
+    fin_line = " · ".join([f"{name}: {val}" for name, val in top]) if top else "—"
+
+    text = f"""
+**Marcador actual:** Sets {st_.sets_me}-{st_.sets_opp} · Juegos {st_.games_me}-{st_.games_opp} · Puntos {pts_label}  
+**Superficie:** {live.surface}
+
+**Rendimiento global:** {won}/{total} puntos ({pct:.0f}%).  
+**Modelo (orientativo):** p(punto)≈{p_point:.2f} · Win Prob≈{p_match:.1f}%.
+
+**Presión:** {pressure_won}/{pressure_total} ({pressure_pct:.0f}%) en deuce/tiebreak.  
+- {ritmo}  
+- {clutch}
+
+**Finishes (más frecuentes):** {fin_line}
+
+**Claves / ajustes recomendados:**
+- {focus[0]}
+"""
+    if len(focus) > 1:
+        for f in focus[1:]:
+            text += f"- {f}\n"
+
+    text += "\n**Objetivo para los próximos juegos:** 1) subir % de puntos “neutros” ganados, 2) mantener rutina en presión, 3) registrar bien el finish del punto."
+    return text.strip()
 
 
 # ==========================================================
@@ -617,8 +704,6 @@ def auth_block():
                 st.session_state.authed = True
                 st.session_state.auth_user = rec.get("display", u.strip() or key)
                 st.session_state.auth_key = key
-
-                # cargar historial de ese usuario a session_state
                 st.session_state.history.matches = load_history_from_disk(key)
                 st.success("Acceso correcto ✅")
                 st.rerun()
@@ -653,10 +738,7 @@ def auth_block():
             }
             users[key] = rec
             save_users(users)
-
-            # crear historial vacío
             save_history_to_disk(key, [])
-
             st.success("Usuario creado ✅ Ya puedes entrar en la pestaña 'Entrar'.")
 
 
@@ -667,7 +749,6 @@ if not st.session_state.authed:
     auth_block()
     st.stop()
 
-# ya autenticado
 live: LiveMatch = st.session_state.live
 history: MatchHistory = st.session_state.history
 user_key = st.session_state.auth_key
@@ -683,7 +764,7 @@ with topR:
         st.session_state.auth_key = None
         st.session_state.page = "LIVE"
         st.session_state.finish = None
-        # (no borramos ficheros)
+        st.session_state._open_summary = False
         st.rerun()
 
 nav_tiles()
@@ -770,18 +851,33 @@ if st.session_state.page == "LIVE":
     st.divider()
 
     st.subheader("Acciones", anchor=False)
-    a1, a2, a3 = st.columns(3, gap="small")
+    a1, a2, a3, a4 = st.columns(4, gap="small")
     with a1:
         if st.button("↩️ Deshacer", use_container_width=True):
             live.undo()
             st.rerun()
     with a2:
-        if st.button("📈 Ir a Analysis", use_container_width=True):
-            st.session_state.page = "ANALYSIS"
+        if st.button("🧾 Resumen", use_container_width=True):
+            st.session_state._open_summary = True
             st.rerun()
     with a3:
+        if st.button("📈 Analysis", use_container_width=True):
+            st.session_state.page = "ANALYSIS"
+            st.rerun()
+    with a4:
         if st.button("🏁 Finalizar", use_container_width=True):
             st.session_state._open_finish = True
+
+    # ✅ NUEVO: resumen live
+    if st.session_state.get("_open_summary", False):
+        with st.expander("🧾 Resumen del partido (según estadísticas)", expanded=True):
+            if len(live.points) == 0:
+                st.info("Aún no hay puntos registrados. Añade puntos para generar un resumen.")
+            else:
+                st.markdown(build_live_summary_text(live))
+            if st.button("Cerrar resumen", use_container_width=True):
+                st.session_state._open_summary = False
+                st.rerun()
 
     if st.session_state.get("_open_finish", False):
         with st.expander("Finalizar partido", expanded=True):
@@ -812,7 +908,6 @@ if st.session_state.page == "LIVE":
                         **report,
                     })
 
-                    # ✅ persistir en disco por usuario
                     save_history_to_disk(user_key, history.matches)
 
                     live.surface = surf_save
