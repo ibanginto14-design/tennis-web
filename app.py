@@ -24,11 +24,36 @@ header[data-testid="stHeader"] {height: 0.6rem;}
 .stButton>button {padding: 0.45rem 0.8rem; border-radius: 12px;}
 /* Inputs compactos */
 div[data-baseweb="input"] input {padding-top: 0.45rem; padding-bottom: 0.45rem;}
-/* Chips simulados (usamos botones) */
+/* Chips simulados */
 .small-note {color: rgba(0,0,0,0.55); font-size: 0.92rem; line-height: 1.25rem;}
 .kpi {font-size: 1.05rem; font-weight: 700;}
 .badge {display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; background: #f1f3f5; margin-right: .35rem; margin-bottom: .35rem;}
 hr {margin: 0.55rem 0;}
+
+/* ======================================================
+   FIX: Tabs (LIVE / Analysis / Stats) invisibles en móvil
+   ====================================================== */
+div[data-baseweb="tab-list"] {
+  gap: 0.4rem !important;
+  padding-bottom: 0.2rem !important;
+}
+div[data-baseweb="tab"] button {
+  color: #111 !important;
+  font-weight: 800 !important;
+  font-size: 1.02rem !important;
+  background: #f3f4f6 !important;
+  border-radius: 999px !important;
+  padding: 0.42rem 0.75rem !important;
+  border: 1px solid rgba(0,0,0,0.08) !important;
+}
+div[data-baseweb="tab"][aria-selected="true"] button {
+  background: #111 !important;
+  color: #fff !important;
+  border-color: #111 !important;
+}
+div[data-baseweb="tab-highlight"] {
+  background: transparent !important; /* evita subrayado raro */
+}
 </style>
 """
 st.markdown(COMPACT_CSS, unsafe_allow_html=True)
@@ -465,8 +490,6 @@ def ss_init():
         st.session_state.history = MatchHistory()
     if "finish" not in st.session_state:
         st.session_state.finish = None
-    if "nav" not in st.session_state:
-        st.session_state.nav = "LIVE"
 
 
 ss_init()
@@ -485,24 +508,16 @@ FINISH_ITEMS = [
 ]
 
 
-# ==========================================================
-# UI HELPERS
-# ==========================================================
 def small_note(txt: str):
     st.markdown(f"<div class='small-note'>{txt}</div>", unsafe_allow_html=True)
 
 
-def badge(txt: str):
-    st.markdown(f"<span class='badge'>{txt}</span>", unsafe_allow_html=True)
-
-
 def title_h(txt: str):
-    # Evita el bug de “títulos que no se ven” (no dependemos de colores raros)
     st.markdown(f"## {txt}")
 
 
 # ==========================================================
-# NAV (TABS COMPACTOS)
+# NAV (TABS)
 # ==========================================================
 tabs = st.tabs(["🎾 LIVE", "📈 Analysis", "📊 Stats"])
 
@@ -512,18 +527,15 @@ tabs = st.tabs(["🎾 LIVE", "📈 Analysis", "📊 Stats"])
 with tabs[0]:
     title_h("LIVE MATCH")
 
-    # Superficie + navegación compacta
     colA, colB = st.columns([1.15, 1.0], gap="small")
     with colA:
         live.surface = st.selectbox("Superficie", SURFACES, index=SURFACES.index(live.surface))
     with colB:
-        # Mini resumen arriba
         total, won, pct = live.points_stats()
         st.markdown(f"<div class='kpi'>Puntos: {total} · {pct:.0f}% ganados</div>", unsafe_allow_html=True)
 
     st.divider()
 
-    # Marcador compacto
     st.subheader("Marcador", anchor=False)
     st_ = live.state
     pts_label = f"TB {st_.pts_me}-{st_.pts_opp}" if st_.in_tiebreak else game_point_label(st_.pts_me, st_.pts_opp)
@@ -535,7 +547,6 @@ with tabs[0]:
 
     st.divider()
 
-    # Punto: botones + manual (ahorra espacio con 2 columnas)
     st.subheader("Punto", anchor=False)
     c1, c2 = st.columns(2, gap="small")
     with c1:
@@ -567,11 +578,9 @@ with tabs[0]:
 
     st.divider()
 
-    # Finish (UNA sola vez)
     st.subheader("Finish (opcional)", anchor=False)
     small_note("Selecciona 1 (se aplica al siguiente punto). Puedes deseleccionar tocando de nuevo.")
 
-    # Chips en 2 columnas para móvil (ahorra espacio)
     fcols = st.columns(2, gap="small")
     for i, (key, label) in enumerate(FINISH_ITEMS):
         with fcols[i % 2]:
@@ -591,7 +600,6 @@ with tabs[0]:
 
     st.divider()
 
-    # Acciones (compacto)
     st.subheader("Acciones", anchor=False)
     a1, a2, a3 = st.columns(3, gap="small")
     with a1:
@@ -599,13 +607,11 @@ with tabs[0]:
             live.undo()
             st.rerun()
     with a2:
-        # “Ir a Analysis” sin duplicar nav: nos quedamos con tabs, pero damos feedback
         st.button("📈 Ir a Analysis", use_container_width=True, disabled=True)
     with a3:
         if st.button("🏁 Finalizar", use_container_width=True):
             st.session_state._open_finish = True
 
-    # Popup/expander de Finalizar (sin ocupar pantalla hasta que lo pides)
     if st.session_state.get("_open_finish", False):
         with st.expander("Finalizar partido", expanded=True):
             st.write("Introduce el marcador final y guarda el partido.")
@@ -644,18 +650,15 @@ with tabs[0]:
 
     st.divider()
 
-    # Exportar + historial visible + editar/borrar
     st.subheader("Exportar", anchor=False)
     small_note("Aquí ves tu historial, puedes editarlo/borrarlo y exportarlo/importarlo en JSON.")
 
     if not history.matches:
         st.info("Aún no hay partidos guardados.")
     else:
-        # Historial compacto (últimos arriba)
         matches = list(reversed(history.matches))
 
         for idx, m in enumerate(matches):
-            # índice real en la lista original
             real_i = len(history.matches) - 1 - idx
             date = m.get("date", "")
             surf = m.get("surface", "—")
@@ -683,7 +686,6 @@ with tabs[0]:
                         st.success("Partido borrado.")
                         st.rerun()
 
-        # Editor modal (expander fijo) — edita el partido seleccionado
         if st.session_state.get("_edit_open", False):
             i = st.session_state.get("_edit_index", None)
             if i is not None and 0 <= i < len(history.matches):
@@ -700,7 +702,6 @@ with tabs[0]:
                         games_l = st.number_input("Juegos Rival", 0, 50, value=int(m.get("games_l", 0)), step=1)
                         surface = st.selectbox("Superficie", SURFACES, index=SURFACES.index(m.get("surface", SURFACES[0])))
 
-                    # (Opcional) editar fecha como texto
                     date = st.text_input("Fecha (ISO)", value=str(m.get("date", "")))
 
                     bL, bR = st.columns(2, gap="small")
@@ -724,7 +725,6 @@ with tabs[0]:
                             st.success("Cambios guardados ✅")
                             st.rerun()
 
-    # Export / Import JSON (siempre visibles)
     export_obj = {"matches": history.matches}
     export_json = json.dumps(export_obj, ensure_ascii=False, indent=2).encode("utf-8")
     st.download_button(
@@ -742,7 +742,6 @@ with tabs[0]:
             matches = obj.get("matches", [])
             if not isinstance(matches, list):
                 raise ValueError("Formato incorrecto: 'matches' debe ser una lista.")
-            # Asegura id si falta
             for mm in matches:
                 if "id" not in mm:
                     mm["id"] = f"m_{datetime.now().timestamp()}"
@@ -761,7 +760,7 @@ with tabs[1]:
 
     p_point = live.estimate_point_win_prob()
     p_match = live.match_win_prob() * 100.0
-    st.write(f"**Win Probability (modelo real)**")
+    st.write("**Win Probability (modelo real)**")
     small_note(f"p(punto)≈{p_point:.2f} · Win Prob≈{p_match:.1f}%")
     small_note("Modelo: Markov (punto→juego→set→BO3). p(punto) se estima con tus puntos del partido.")
 
@@ -785,7 +784,6 @@ with tabs[1]:
 with tabs[2]:
     title_h("Stats")
 
-    # Filtros compactos
     colF1, colF2 = st.columns([1.1, 0.9], gap="small")
     with colF1:
         n_choice = st.selectbox("Rango", ["Últ. 10", "Últ. 30", "Todos"], index=0)
@@ -795,7 +793,6 @@ with tabs[2]:
     n = 10 if n_choice == "Últ. 10" else (30 if n_choice == "Últ. 30" else None)
     agg = history.aggregate(n=n, surface=surf_filter)
 
-    # KPIs compactos
     k1, k2, k3 = st.columns(3, gap="small")
     with k1:
         st.metric("Partidos", f"{agg['matches_pct']:.0f}%", f"{agg['matches_win']} / {agg['matches_total']}")
@@ -824,7 +821,6 @@ with tabs[2]:
     if not results:
         st.info("Aún no hay partidos guardados.")
     else:
-        # badges compactos
         row = []
         for r in results:
             row.append("✅ W" if r == "W" else "⬛ L")
