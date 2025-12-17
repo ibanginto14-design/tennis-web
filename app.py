@@ -1,19 +1,165 @@
 # app.py
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from copy import deepcopy
 from datetime import datetime
 from functools import lru_cache
-from typing import List, Dict, Any, Optional
+import json
 
 import pandas as pd
 import streamlit as st
 
 
 # ==========================================================
-# LÓGICA TENIS (igual que tu base)
+# PAGE CONFIG
+# ==========================================================
+st.set_page_config(
+    page_title="TennisStats",
+    page_icon="🎾",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
+
+# ==========================================================
+# THEME / CSS (fix titles not visible + mobile padding)
+# ==========================================================
+CSS = """
+<style>
+/* Make room for our fixed top bar on mobile */
+.block-container { padding-top: 74px !important; padding-bottom: 28px !important; }
+
+/* Fixed top bar */
+.ts-topbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 64px;
+  background: #1f1f1f;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(0,0,0,.14);
+}
+.ts-topbar .inner {
+  width: min(980px, calc(100vw - 28px));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ts-title {
+  color: #ffffff;
+  font-weight: 800;
+  letter-spacing: .6px;
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ts-badge {
+  background: #ccff33;
+  color: #111;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+/* Cards */
+.ts-card {
+  background: #ffffff;
+  border-radius: 18px;
+  padding: 16px 16px 14px 16px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.08);
+  border: 1px solid rgba(0,0,0,.04);
+}
+.ts-card-title {
+  font-weight: 800;
+  color: #171717;
+  margin: 0 0 10px 0;
+  font-size: 16px;
+}
+.ts-muted { color: rgba(0,0,0,.60); font-size: 13px; }
+
+/* Buttons spacing */
+div.stButton > button {
+  border-radius: 14px !important;
+  padding: 12px 14px !important;
+}
+
+/* Ring component */
+.ts-ring-wrap {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+@media (max-width: 520px){
+  .ts-ring-wrap { grid-template-columns: 1fr; }
+}
+.ts-ring {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,.06);
+  border-radius: 18px;
+  padding: 8px 10px;
+}
+.ts-ring-circle {
+  width: 110px;
+  height: 110px;
+  border-radius: 999px;
+  background: conic-gradient(#ccff33 calc(var(--p)*1%), rgba(255,255,255,.14) 0);
+  display: grid;
+  place-items: center;
+}
+.ts-ring-inner {
+  width: 86px;
+  height: 86px;
+  border-radius: 999px;
+  background: #1f1f1f;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 6px;
+}
+.ts-ring-big {
+  color: #fff;
+  font-weight: 900;
+  font-size: 18px;
+  line-height: 1.1;
+}
+.ts-ring-sub {
+  color: rgba(255,255,255,.70);
+  font-size: 12px;
+  line-height: 1.1;
+}
+.ts-ring-title {
+  color: rgba(255,255,255,.88);
+  font-weight: 800;
+  font-size: 12px;
+  text-align: center;
+  white-space: pre-line;
+}
+
+/* Dark header area for Stats page */
+.ts-stats-header {
+  background: #1f1f1f;
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.12);
+}
+
+/* Streamlit default header is fine; we do NOT hide it to avoid odd mobile offsets */
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+# ==========================================================
+# Tennis logic (from your model)
 # ==========================================================
 POINT_LABELS = {0: "0", 1: "15", 2: "30", 3: "40"}
 
@@ -124,7 +270,7 @@ def _prob_match_bo3(
     g_opp: int,
     pts_me: int,
     pts_opp: int,
-    in_tb: bool
+    in_tb: bool,
 ) -> float:
     if sets_me >= 2:
         return 1.0
@@ -132,13 +278,14 @@ def _prob_match_bo3(
         return 0.0
 
     p_set = _prob_set_from(p_rounded, g_me, g_opp, pts_me, pts_opp, in_tb)
-
     win_state = (p_rounded, sets_me + 1, sets_opp, 0, 0, 0, 0, False)
     lose_state = (p_rounded, sets_me, sets_opp + 1, 0, 0, 0, 0, False)
-
     return p_set * _prob_match_bo3(*win_state) + (1 - p_set) * _prob_match_bo3(*lose_state)
 
 
+# ==========================================================
+# State
+# ==========================================================
 @dataclass
 class LiveState:
     sets_me: int = 0
@@ -152,10 +299,10 @@ class LiveState:
 
 class LiveMatch:
     def __init__(self):
-        self.points: List[Dict[str, Any]] = []
+        self.points: list[dict] = []
         self.state = LiveState()
         self.surface = "Tierra batida"
-        self._undo: List[Any] = []
+        self._undo: list[tuple[LiveState, int, str]] = []
 
     def snapshot(self):
         self._undo.append((deepcopy(self.state), len(self.points), self.surface))
@@ -163,8 +310,8 @@ class LiveMatch:
     def undo(self):
         if not self._undo:
             return
-        st0, n, surf = self._undo.pop()
-        self.state = st0
+        st_, n, surf = self._undo.pop()
+        self.state = st_
         self.points = self.points[:n]
         self.surface = surf
 
@@ -188,20 +335,11 @@ class LiveMatch:
     def match_win_prob(self) -> float:
         p = self.estimate_point_win_prob()
         p_r = round(p, 3)
-        st0 = self.state
-        return _prob_match_bo3(
-            p_r,
-            st0.sets_me,
-            st0.sets_opp,
-            st0.games_me,
-            st0.games_opp,
-            st0.pts_me,
-            st0.pts_opp,
-            st0.in_tiebreak
-        )
+        st_ = self.state
+        return _prob_match_bo3(p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak)
 
-    def win_prob_series(self):
-        probs = []
+    def win_prob_series(self) -> list[float]:
+        probs: list[float] = []
         tmp = LiveMatch()
         tmp.surface = self.surface
         for p in self.points:
@@ -249,19 +387,20 @@ class LiveMatch:
 
     def add_point(self, result: str, meta: dict):
         self.snapshot()
-
         before = deepcopy(self.state)
         set_idx = before.sets_me + before.sets_opp + 1
         is_pressure = bool(before.in_tiebreak or (before.pts_me >= 3 and before.pts_opp >= 3))
 
-        self.points.append({
-            "result": result,
-            **meta,
-            "surface": self.surface,
-            "before": asdict(before),
-            "set_idx": set_idx,
-            "pressure": is_pressure,
-        })
+        self.points.append(
+            {
+                "result": result,
+                "finish": meta.get("finish"),
+                "surface": self.surface,
+                "before": before.__dict__,
+                "set_idx": set_idx,
+                "pressure": is_pressure,
+            }
+        )
 
         if result == "win":
             self.state.pts_me += 1
@@ -308,15 +447,26 @@ class LiveMatch:
         won = sum(1 for p in self.points if p["result"] == "win")
         pct = (won / total * 100.0) if total else 0.0
 
-        finishes = {"winner": 0, "unforced": 0, "forced": 0, "ace": 0, "double_fault": 0,
-                    "opp_error": 0, "opp_winner": 0, "none": 0}
+        finishes = {
+            "winner": 0,
+            "unforced": 0,
+            "forced": 0,
+            "ace": 0,
+            "double_fault": 0,
+            "opp_error": 0,
+            "opp_winner": 0,
+            "none": 0,
+        }
 
         pressure_total = sum(1 for p in self.points if p.get("pressure"))
         pressure_won = sum(1 for p in self.points if p.get("pressure") and p["result"] == "win")
 
         for p in self.points:
             f = p.get("finish") or "none"
-            finishes[f if f in finishes else "none"] += 1
+            if f not in finishes:
+                finishes["none"] += 1
+            else:
+                finishes[f] += 1
 
         return {
             "points_total": total,
@@ -331,7 +481,7 @@ class LiveMatch:
 
 class MatchHistory:
     def __init__(self):
-        self.matches: List[Dict[str, Any]] = []
+        self.matches: list[dict] = []
 
     def add(self, m: dict):
         self.matches.append(m)
@@ -388,8 +538,15 @@ class MatchHistory:
         pressure_total = sum(m.get("pressure_total", 0) for m in matches)
         pressure_won = sum(m.get("pressure_won", 0) for m in matches)
 
-        finishes_sum = {"winner": 0, "unforced": 0, "forced": 0, "ace": 0, "double_fault": 0,
-                        "opp_error": 0, "opp_winner": 0}
+        finishes_sum = {
+            "winner": 0,
+            "unforced": 0,
+            "forced": 0,
+            "ace": 0,
+            "double_fault": 0,
+            "opp_error": 0,
+            "opp_winner": 0,
+        }
         for m in matches:
             fin = m.get("finishes", {}) or {}
             for k in finishes_sum:
@@ -399,206 +556,84 @@ class MatchHistory:
             "matches_total": total_m,
             "matches_win": win_m,
             "matches_pct": self.pct(win_m, total_m),
-
             "sets_w": sets_w,
             "sets_l": sets_l,
             "sets_pct": self.pct(sets_w, sets_w + sets_l),
-
             "games_w": games_w,
             "games_l": games_l,
             "games_pct": self.pct(games_w, games_w + games_l),
-
             "points_total": points_total,
             "points_won": points_won,
             "points_pct": self.pct(points_won, points_total),
-
             "pressure_total": pressure_total,
             "pressure_won": pressure_won,
             "pressure_pct": self.pct(pressure_won, pressure_total),
-
             "finishes_sum": finishes_sum,
             "surfaces": surfaces,
         }
 
 
 # ==========================================================
-# UI (Streamlit)
+# Session init
 # ==========================================================
-def inject_css():
-    st.markdown(
-        """
-        <style>
-        /* Layout */
-        .block-container { padding-top: 0.7rem; padding-bottom: 2rem; max-width: 980px; }
-        @media (max-width: 480px) { .block-container { padding-left: 0.9rem; padding-right: 0.9rem; } }
-
-        /* Header */
-        .topbar {
-            background: #222; color: #fff;
-            border-radius: 18px;
-            padding: 14px 16px;
-            box-shadow: 0 10px 26px rgba(0,0,0,.12);
-            display:flex; align-items:center; gap:10px;
-        }
-        .topbar .ball {
-            width: 26px; height: 26px; border-radius: 50%;
-            background: radial-gradient(circle at 30% 30%, #d8ff55, #8ecb1a);
-            box-shadow: inset 0 0 0 3px rgba(255,255,255,0.55);
-        }
-        .topbar h1 { font-size: 18px; margin:0; padding:0; letter-spacing: .04em; }
-
-        /* Cards */
-        .card {
-            background:#fff;
-            border-radius: 18px;
-            padding: 14px 14px 10px 14px;
-            box-shadow: 0 8px 20px rgba(0,0,0,.08);
-            margin: 12px 0;
-        }
-        .card h3 { margin:0 0 10px 0; font-size: 15px; color:#222; }
-        .muted { color:#666; font-size: 13px; }
-        .big { font-size: 22px; font-weight: 800; color:#111; margin: 3px 0 8px 0; }
-
-        /* Chips */
-        .chiprow { display:flex; gap:10px; flex-wrap:wrap; }
-        .chip {
-            padding: 10px 14px;
-            border-radius: 999px;
-            border: 1px solid rgba(0,0,0,.10);
-            background: #efefef;
-            color:#111;
-            font-weight: 650;
-            font-size: 13px;
-            cursor:pointer;
-            user-select:none;
-        }
-        .chip.sel {
-            background: #d8ff55;
-            border-color: rgba(0,0,0,.16);
-        }
-
-        /* Rings */
-        .rings { display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-        @media (max-width: 480px) { .rings { grid-template-columns: 1fr; } }
-
-        .ring {
-            background: rgba(255,255,255,0.16);
-            border-radius: 18px;
-            padding: 10px 10px 12px 10px;
-            box-shadow: 0 10px 24px rgba(0,0,0,.12);
-        }
-        .ring-title { color:#f2f2f2; font-weight: 700; font-size: 13px; margin-top: 8px; text-align:center; white-space: pre-line; }
-        .ring-circle {
-            width: 110px; height: 110px; border-radius: 50%;
-            margin: 0 auto;
-            background: conic-gradient(#d8ff55 calc(var(--p) * 1%), rgba(255,255,255,0.14) 0);
-            display:flex; align-items:center; justify-content:center;
-        }
-        .ring-inner {
-            width: 82px; height: 82px; border-radius: 50%;
-            background: rgba(0,0,0,0.18);
-            display:flex; flex-direction:column; align-items:center; justify-content:center;
-            color:#fff;
-        }
-        .ring-big { font-weight: 900; font-size: 18px; line-height: 1.1; }
-        .ring-sub { font-size: 12px; opacity: .85; }
-
-        /* Dots streak */
-        .dots { display:flex; gap: 10px; align-items:center; padding: 6px 2px; flex-wrap:wrap; }
-        .dot { width: 12px; height: 12px; border-radius: 50%; background:#222; opacity:.55; }
-        .dot.w { background:#d8ff55; opacity:1; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+if "live" not in st.session_state:
+    st.session_state.live = LiveMatch()
+if "history" not in st.session_state:
+    st.session_state.history = MatchHistory()
+if "page" not in st.session_state:
+    st.session_state.page = "LIVE"
+if "finish" not in st.session_state:
+    st.session_state.finish = None
 
 
-def ensure_state():
-    if "page" not in st.session_state:
-        st.session_state.page = "live"
-    if "live" not in st.session_state:
-        st.session_state.live = LiveMatch()
-    if "history" not in st.session_state:
-        st.session_state.history = MatchHistory()
-    if "finish_sel" not in st.session_state:
-        st.session_state.finish_sel = None
-    if "toast" not in st.session_state:
-        st.session_state.toast = None
-
-
-def header(title: str):
+# ==========================================================
+# Helpers UI
+# ==========================================================
+def topbar(title: str):
     st.markdown(
         f"""
-        <div class="topbar">
-            <div class="ball"></div>
-            <h1>{title}</h1>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.write("")
-
-
-def nav_buttons():
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("📊 Analysis", use_container_width=True):
-            st.session_state.page = "analysis"
-            st.rerun()
-    with c2:
-        if st.button("📈 Stats", use_container_width=True):
-            st.session_state.page = "stats"
-            st.rerun()
-
-
-def card_open(title: str):
-    st.markdown(f'<div class="card"><h3>{title}</h3>', unsafe_allow_html=True)
-
-
-def card_close():
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def ring(title: str, pct: float, sub: str):
-    pct0 = int(round(max(0, min(100, pct))))
-    st.markdown(
-        f"""
-        <div class="ring">
-          <div class="ring-circle" style="--p:{pct0};">
-            <div class="ring-inner">
-              <div class="ring-big">{pct0}%</div>
-              <div class="ring-sub">{sub}</div>
-            </div>
+        <div class="ts-topbar">
+          <div class="inner">
+            <div class="ts-title">🎾 {title}</div>
+            <div class="ts-badge">TennisStats</div>
           </div>
-          <div class="ring-title">{title}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def history_dataframe(matches: List[Dict[str, Any]]) -> pd.DataFrame:
-    if not matches:
-        return pd.DataFrame(columns=["Fecha", "Resultado", "Sets", "Juegos", "Superficie", "% Puntos", "% Presión"])
-    rows = []
-    for m in matches:
-        rows.append({
-            "Fecha": m.get("date", ""),
-            "Resultado": "W" if m.get("won_match") else "L",
-            "Sets": f"{m.get('sets_w',0)}-{m.get('sets_l',0)}",
-            "Juegos": f"{m.get('games_w',0)}-{m.get('games_l',0)}",
-            "Superficie": m.get("surface", ""),
-            "% Puntos": round(float(m.get("points_pct", 0.0)), 1),
-            "% Presión": round(float(m.get("pressure_pct", 0.0)), 1),
-        })
-    df = pd.DataFrame(rows)
-    return df
+def card(title: str, body_html: str):
+    st.markdown(
+        f"""
+        <div class="ts-card">
+          <div class="ts-card-title">{title}</div>
+          {body_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-# ==========================================================
-# PÁGINAS
-# ==========================================================
-FINISH_ITEMS = [
+def ring(title: str, pct: float, sub: str) -> str:
+    p = max(0, min(100, int(round(pct))))
+    return f"""
+    <div class="ts-ring">
+      <div class="ts-ring-circle" style="--p:{p};">
+        <div class="ts-ring-inner">
+          <div>
+            <div class="ts-ring-big">{p}%</div>
+            <div class="ts-ring-sub">{sub}</div>
+          </div>
+        </div>
+      </div>
+      <div class="ts-ring-title">{title}</div>
+    </div>
+    """
+
+
+SURFACES = ("Tierra batida", "Pista rápida", "Hierba", "Indoor")
+FINISH_OPTIONS = [
     ("winner", "Winner"),
     ("unforced", "ENF"),
     ("forced", "EF"),
@@ -609,330 +644,383 @@ FINISH_ITEMS = [
 ]
 
 
-def page_live():
+def finish_label(key: str | None) -> str:
+    if not key:
+        return "Ninguno"
+    for k, lab in FINISH_OPTIONS:
+        if k == key:
+            return lab
+    return "Ninguno"
+
+
+def build_history_df(matches: list[dict]) -> pd.DataFrame:
+    rows = []
+    for m in matches:
+        fin = m.get("finishes", {}) or {}
+        rows.append(
+            {
+                "Fecha": m.get("date", ""),
+                "Superficie": m.get("surface", ""),
+                "Resultado": "W" if m.get("won_match") else "L",
+                "Sets": f"{m.get('sets_w',0)}-{m.get('sets_l',0)}",
+                "Juegos": f"{m.get('games_w',0)}-{m.get('games_l',0)}",
+                "Puntos %": round(float(m.get("points_pct", 0) or 0), 1),
+                "Presión %": round(float(m.get("pressure_pct", 0) or 0), 1),
+                "Winners": int(fin.get("winner", 0) or 0),
+                "ENF": int(fin.get("unforced", 0) or 0),
+                "EF": int(fin.get("forced", 0) or 0),
+                "Aces": int(fin.get("ace", 0) or 0),
+                "Dobles faltas": int(fin.get("double_fault", 0) or 0),
+            }
+        )
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.iloc[::-1].reset_index(drop=True)  # newest first
+    return df
+
+
+# ==========================================================
+# Navigation (simple, mobile friendly)
+# ==========================================================
+# Keep titles visible: we render our own topbar, then buttons
+page = st.session_state.page
+topbar("LIVE MATCH" if page == "LIVE" else ("Analysis" if page == "ANALYSIS" else "Stats"))
+
+nav_cols = st.columns(3)
+with nav_cols[0]:
+    if st.button("🎾 LIVE", use_container_width=True):
+        st.session_state.page = "LIVE"
+        st.rerun()
+with nav_cols[1]:
+    if st.button("📊 Analysis", use_container_width=True):
+        st.session_state.page = "ANALYSIS"
+        st.rerun()
+with nav_cols[2]:
+    if st.button("📈 Stats", use_container_width=True):
+        st.session_state.page = "STATS"
+        st.rerun()
+
+st.write("")
+
+
+# ==========================================================
+# LIVE PAGE
+# ==========================================================
+if st.session_state.page == "LIVE":
     live: LiveMatch = st.session_state.live
-    hist: MatchHistory = st.session_state.history
+    history: MatchHistory = st.session_state.history
 
-    header("LIVE MATCH")
+    # Surface
+    surface = st.selectbox("Superficie", SURFACES, index=SURFACES.index(live.surface))
+    live.surface = surface
 
-    # Superficie + nav
-    live.surface = st.selectbox(
-        "Superficie",
-        ["Tierra batida", "Pista rápida", "Hierba", "Indoor"],
-        index=["Tierra batida", "Pista rápida", "Hierba", "Indoor"].index(live.surface)
-        if live.surface in ["Tierra batida", "Pista rápida", "Hierba", "Indoor"] else 0,
-    )
-    nav_buttons()
-
-    # Marcador
-    st0 = live.state
+    # Score card
+    st_ = live.state
     total, won, pct = live.points_stats()
-    pts_txt = f"TB {st0.pts_me}-{st0.pts_opp}" if st0.in_tiebreak else game_point_label(st0.pts_me, st0.pts_opp)
+    pts_lbl = f"TB {st_.pts_me}-{st_.pts_opp}" if st_.in_tiebreak else game_point_label(st_.pts_me, st_.pts_opp)
+
     p_point = live.estimate_point_win_prob()
     p_match = live.match_win_prob() * 100.0
 
-    card_open("Marcador")
-    st.markdown(
-        f'<div class="big">Sets {st0.sets_me}-{st0.sets_opp} &nbsp;·&nbsp; Juegos {st0.games_me}-{st0.games_opp} &nbsp;·&nbsp; Puntos {pts_txt}</div>',
-        unsafe_allow_html=True
+    card(
+        "Marcador",
+        f"""
+        <div style="font-size:26px; font-weight:900; color:#111; line-height:1.15;">
+          Sets {st_.sets_me}-{st_.sets_opp} &nbsp;·&nbsp; Juegos {st_.games_me}-{st_.games_opp} &nbsp;·&nbsp; Puntos {pts_lbl}
+        </div>
+        <div class="ts-muted" style="margin-top:8px;">
+          Superficie: {live.surface} &nbsp;&nbsp;·&nbsp;&nbsp; Puntos: {total} &nbsp;&nbsp;·&nbsp;&nbsp; % ganados: {pct:.1f}%
+        </div>
+        <div class="ts-muted" style="margin-top:6px;">
+          Modelo: p(punto)≈{p_point:.2f} &nbsp;&nbsp;·&nbsp;&nbsp; Win Prob≈{p_match:.1f}%
+        </div>
+        """,
     )
-    st.markdown(
-        f'<div class="muted">Superficie: {live.surface} &nbsp;·&nbsp; Puntos: {total} &nbsp;·&nbsp; % ganados: {pct:.1f}%</div>',
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        f'<div class="muted">Modelo: p(punto)≈{p_point:.2f} &nbsp;·&nbsp; Win Prob≈{p_match:.1f}%</div>',
-        unsafe_allow_html=True
-    )
-    card_close()
+    st.write("")
 
     # Punto
-    card_open("Punto")
+    card("Punto", "<div class='ts-muted'>Registra el resultado del punto.</div>")
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Punto Yo", use_container_width=True):
-            live.add_point("win", {"finish": st.session_state.finish_sel})
-            st.session_state.finish_sel = None
+        if st.button("✅ Punto Yo", use_container_width=True):
+            live.add_point("win", {"finish": st.session_state.finish})
+            st.session_state.finish = None
             st.rerun()
     with c2:
-        if st.button("Punto Rival", use_container_width=True):
-            live.add_point("lose", {"finish": st.session_state.finish_sel})
-            st.session_state.finish_sel = None
+        if st.button("❌ Punto Rival", use_container_width=True):
+            live.add_point("lose", {"finish": st.session_state.finish})
+            st.session_state.finish = None
             st.rerun()
 
-    r1, r2, r3, r4 = st.columns(4)
-    with r1:
-        if st.button("+Juego Yo", use_container_width=True):
+    c3, c4, c5, c6 = st.columns(4)
+    with c3:
+        if st.button("+ Juego Yo", use_container_width=True):
             live.add_game_manual("me")
             st.rerun()
-    with r2:
-        if st.button("+Juego Rival", use_container_width=True):
+    with c4:
+        if st.button("+ Juego Rival", use_container_width=True):
             live.add_game_manual("opp")
             st.rerun()
-    with r3:
-        if st.button("+Set Yo", use_container_width=True):
+    with c5:
+        if st.button("+ Set Yo", use_container_width=True):
             live.add_set_manual("me")
             st.rerun()
-    with r4:
-        if st.button("+Set Rival", use_container_width=True):
+    with c6:
+        if st.button("+ Set Rival", use_container_width=True):
             live.add_set_manual("opp")
             st.rerun()
-    card_close()
 
-    # Finish (opcional) ✅ YA NO SE DUPLICA
-    card_open("Finish (opcional)")
-    st.markdown('<div class="chiprow">', unsafe_allow_html=True)
+    st.write("")
 
-    # Render chips como botones "simulados" (con state)
-    # Usamos botones normales en columnas para que sea clickable + responsive
-    cols = st.columns(4)
-    for i, (k, label) in enumerate(FINISH_ITEMS):
-        with cols[i % 4]:
-            selected = (st.session_state.finish_sel == k)
-            text = f"✅ {label}" if selected else label
-            if st.button(text, key=f"chip_{k}", use_container_width=True):
-                st.session_state.finish_sel = None if selected else k
-                st.rerun()
+    # Finish (NO duplication anymore)
+    card("Finish (opcional)", "<div class='ts-muted'>Selecciona (una sola vez) el tipo de finalización del punto.</div>")
+    finish_keys = [None] + [k for k, _ in FINISH_OPTIONS]
+    finish_labels = ["Ninguno"] + [lab for _, lab in FINISH_OPTIONS]
 
-    # Limpiar
-    if st.button("Limpiar", use_container_width=False):
-        st.session_state.finish_sel = None
-        st.rerun()
-    card_close()
+    # radio: one control only (no repeated buttons list)
+    chosen = st.radio(
+        "Finish",
+        options=list(range(len(finish_keys))),
+        format_func=lambda i: finish_labels[i],
+        horizontal=True,
+        index=finish_labels.index(finish_label(st.session_state.finish)),
+        label_visibility="collapsed",
+    )
+    st.session_state.finish = finish_keys[chosen]
 
-    # Acciones
-    card_open("Acciones")
+    cfin1, cfin2 = st.columns([1, 1])
+    with cfin1:
+        st.caption(f"Seleccionado: **{finish_label(st.session_state.finish)}**")
+    with cfin2:
+        if st.button("Limpiar finish", use_container_width=True):
+            st.session_state.finish = None
+            st.rerun()
+
+    st.write("")
+
+    # Actions
+    card("Acciones", "<div class='ts-muted'>Deshacer, finalizar y exportación.</div>")
     a1, a2, a3 = st.columns(3)
     with a1:
-        if st.button("Deshacer", use_container_width=True):
+        if st.button("↩️ Deshacer", use_container_width=True):
             live.undo()
             st.rerun()
     with a2:
-        if st.button("Analysis", use_container_width=True):
-            st.session_state.page = "analysis"
+        if st.button("📊 Ir a Analysis", use_container_width=True):
+            st.session_state.page = "ANALYSIS"
             st.rerun()
     with a3:
-        open_finish = st.button("Finalizar", use_container_width=True)
-    card_close()
+        if st.button("🏁 Finalizar", use_container_width=True):
+            st.session_state["show_finish_modal"] = True
+            st.rerun()
 
-    # Finalizar (form)
-    if open_finish:
-        st.session_state._show_finish = True
-        st.rerun()
+    # Finish modal (simple inline)
+    if st.session_state.get("show_finish_modal", False):
+        st.write("")
+        card("Finalizar partido", "<div class='ts-muted'>Introduce el resultado final y guarda en historial.</div>")
 
-    if st.session_state.get("_show_finish", False):
-        card_open("Finalizar partido")
-        sw = st.number_input("Sets Yo", min_value=0, value=int(st0.sets_me), step=1)
-        sl = st.number_input("Sets Rival", min_value=0, value=int(st0.sets_opp), step=1)
-        gw = st.number_input("Juegos Yo", min_value=0, value=int(st0.games_me), step=1)
-        gl = st.number_input("Juegos Rival", min_value=0, value=int(st0.games_opp), step=1)
-        surf_save = st.selectbox("Superficie (guardar)", ["Tierra batida", "Pista rápida", "Hierba", "Indoor"],
-                                 index=["Tierra batida", "Pista rápida", "Hierba", "Indoor"].index(live.surface))
+        sw = st.number_input("Sets Yo", min_value=0, value=int(live.state.sets_me), step=1)
+        sl = st.number_input("Sets Rival", min_value=0, value=int(live.state.sets_opp), step=1)
+        gw = st.number_input("Juegos Yo", min_value=0, value=int(live.state.games_me), step=1)
+        gl = st.number_input("Juegos Rival", min_value=0, value=int(live.state.games_opp), step=1)
+        surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURFACES.index(live.surface))
 
-        b1, b2 = st.columns(2)
-        with b1:
-            if st.button("Cancelar", use_container_width=True):
-                st.session_state._show_finish = False
-                st.rerun()
-        with b2:
-            if st.button("Guardar partido", use_container_width=True):
+        bsave, bcancel = st.columns(2)
+        with bsave:
+            if st.button("✅ Guardar partido", use_container_width=True):
                 report = live.match_summary()
-                won_match = int(sw) > int(sl)
-
-                hist.add({
-                    "date": datetime.now().isoformat(timespec="seconds"),
-                    "won_match": won_match,
-                    "sets_w": int(sw),
-                    "sets_l": int(sl),
-                    "games_w": int(gw),
-                    "games_l": int(gl),
-                    "surface": surf_save,
-                    **report,
-                })
-
+                won_match = sw > sl
+                history.add(
+                    {
+                        "date": datetime.now().isoformat(timespec="seconds"),
+                        "won_match": bool(won_match),
+                        "sets_w": int(sw),
+                        "sets_l": int(sl),
+                        "games_w": int(gw),
+                        "games_l": int(gl),
+                        "surface": surf_save,
+                        **report,
+                    }
+                )
                 live.surface = surf_save
                 live.reset()
-                st.session_state.finish_sel = None
-                st.session_state._show_finish = False
-                st.success("Partido guardado ✅")
+                st.session_state["show_finish_modal"] = False
                 st.rerun()
-        card_close()
+        with bcancel:
+            if st.button("Cancelar", use_container_width=True):
+                st.session_state["show_finish_modal"] = False
+                st.rerun()
 
-    # Exportar + HISTORIAL VISIBLE ✅
-    card_open("Exportar")
-    df = history_dataframe(hist.matches)
-    if df.empty:
+    # Export section (now includes history preview)
+    st.write("")
+    card("Exportar", "<div class='ts-muted'>Descarga y vista previa del historial.</div>")
+
+    df_hist = build_history_df(history.matches)
+    if df_hist.empty:
         st.info("Aún no hay partidos guardados.")
     else:
-        st.write("Historial de partidos:")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
-    payload = {"matches": hist.matches}
+    # Downloads
+    payload = {"matches": history.matches}
     st.download_button(
-        "Descargar historial (JSON)",
+        "⬇️ Descargar historial (JSON)",
         data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
         file_name="tennis_history.json",
         mime="application/json",
         use_container_width=True,
     )
-
-    if not df.empty:
+    if not df_hist.empty:
         st.download_button(
-            "Descargar historial (CSV)",
-            data=df.to_csv(index=False).encode("utf-8"),
+            "⬇️ Descargar historial (CSV)",
+            data=df_hist.to_csv(index=False).encode("utf-8"),
             file_name="tennis_history.csv",
             mime="text/csv",
             use_container_width=True,
         )
-    card_close()
 
 
-def page_analysis():
+# ==========================================================
+# ANALYSIS PAGE
+# ==========================================================
+elif st.session_state.page == "ANALYSIS":
     live: LiveMatch = st.session_state.live
-
-    header("Analysis")
-    if st.button("⬅️ Volver a LIVE", use_container_width=True):
-        st.session_state.page = "live"
-        st.rerun()
 
     p_point = live.estimate_point_win_prob()
     p_match = live.match_win_prob() * 100.0
-
-    card_open("Win Probability (modelo real)")
-    st.markdown(
-        f'<div class="big">p(punto)≈{p_point:.2f} &nbsp;·&nbsp; Win Prob≈{p_match:.1f}%</div>',
-        unsafe_allow_html=True
+    card(
+        "Win Probability (modelo real)",
+        f"""
+        <div style="font-size:18px; font-weight:900; color:#111;">
+          p(punto)≈{p_point:.2f} &nbsp;·&nbsp; Win Prob≈{p_match:.1f}%
+        </div>
+        <div class="ts-muted" style="margin-top:6px;">
+          Modelo: Markov (punto→juego→set→BO3). p(punto) se estima con tus puntos del partido.
+        </div>
+        """,
     )
-    st.markdown(
-        '<div class="muted">Modelo: Markov (punto→juego→set→BO3). p(punto) se estima con tus puntos del partido.</div>',
-        unsafe_allow_html=True
-    )
+    st.write("")
 
     probs = live.win_prob_series()
     if len(probs) < 2:
         st.info("Aún no hay suficientes puntos para dibujar la gráfica (mínimo 2).")
     else:
-        chart_df = pd.DataFrame({"WinProb%": probs})
-        st.line_chart(chart_df, height=320)
-    card_close()
+        df = pd.DataFrame({"Punto": list(range(1, len(probs) + 1)), "WinProb%": probs})
+        st.line_chart(df.set_index("Punto"))
 
-    card_open("Puntos de presión (live)")
-    total = sum(1 for p in live.points if p.get("pressure"))
-    won = sum(1 for p in live.points if p.get("pressure") and p["result"] == "win")
-    pct = (won / total * 100.0) if total else 0.0
-    st.markdown(f'<div class="muted">{won}/{total} ganados ({pct:.0f}%) en deuce/tiebreak.</div>', unsafe_allow_html=True)
-    card_close()
-
-
-def page_stats():
-    hist: MatchHistory = st.session_state.history
-
-    header("Estadísticas")
+    # Pressure
+    pressure_total = sum(1 for p in live.points if p.get("pressure"))
+    pressure_won = sum(1 for p in live.points if p.get("pressure") and p["result"] == "win")
+    pressure_pct = (pressure_won / pressure_total * 100.0) if pressure_total else 0.0
+    st.write("")
+    card(
+        "Puntos de presión (live)",
+        f"""
+        <div style="font-size:16px; font-weight:900; color:#111;">
+          {pressure_won}/{pressure_total} ganados ({pressure_pct:.0f}%)
+        </div>
+        <div class="ts-muted" style="margin-top:6px;">
+          Se consideran presión los puntos en deuce y/o tiebreak.
+        </div>
+        """,
+    )
+    st.write("")
     if st.button("⬅️ Volver a LIVE", use_container_width=True):
-        st.session_state.page = "live"
+        st.session_state.page = "LIVE"
         st.rerun()
 
-    # Filtros
-    card_open("Filtros")
-    fcols = st.columns([1, 1, 1, 1.2])
-    with fcols[0]:
-        if st.button("Últ. 10", use_container_width=True):
-            st.session_state.filter_n = 10
-    with fcols[1]:
-        if st.button("Últ. 30", use_container_width=True):
-            st.session_state.filter_n = 30
-    with fcols[2]:
-        if st.button("Todos", use_container_width=True):
-            st.session_state.filter_n = None
-    with fcols[3]:
-        st.session_state.filter_surface = st.selectbox(
-            "Superficie",
-            ["Todas", "Tierra batida", "Pista rápida", "Hierba", "Indoor"],
-            index=["Todas", "Tierra batida", "Pista rápida", "Hierba", "Indoor"].index(
-                st.session_state.get("filter_surface", "Todas")
-            ),
-        )
-    card_close()
 
-    n = st.session_state.get("filter_n", 10)
-    surf = st.session_state.get("filter_surface", "Todas")
+# ==========================================================
+# STATS PAGE
+# ==========================================================
+else:
+    history: MatchHistory = st.session_state.history
 
-    agg = hist.aggregate(n=n, surface=surf)
+    # Filters
+    card("Filtros", "<div class='ts-muted'>Selecciona rango y superficie.</div>")
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        last10 = st.button("Últ. 10", use_container_width=True)
+    with f2:
+        last30 = st.button("Últ. 30", use_container_width=True)
+    with f3:
+        allm = st.button("Todos", use_container_width=True)
 
-    # Rings (header visual)
-    st.markdown(
-        '<div class="card" style="background:#222; color:#fff; margin-top:10px;">'
-        '<div class="rings">',
-        unsafe_allow_html=True
-    )
-    ring("Sets\nGanados", agg["sets_pct"], f"{agg['sets_w']} de {agg['sets_w'] + agg['sets_l']}")
-    ring("Partidos\nganados", agg["matches_pct"], f"{agg['matches_win']} de {agg['matches_total']}")
-    ring("Juegos\nGanados", agg["games_pct"], f"{agg['games_w']} de {agg['games_w'] + agg['games_l']}")
-    st.markdown("</div></div>", unsafe_allow_html=True)
+    if "filter_n" not in st.session_state:
+        st.session_state.filter_n = 10
+    if last10:
+        st.session_state.filter_n = 10
+        st.rerun()
+    if last30:
+        st.session_state.filter_n = 30
+        st.rerun()
+    if allm:
+        st.session_state.filter_n = None
+        st.rerun()
 
-    # Resumen
-    card_open("Resumen (filtro actual)")
-    st.markdown(
-        f'<div class="muted">Puntos: {agg["points_won"]}/{agg["points_total"]} ({agg["points_pct"]:.0f}%) '
-        f'&nbsp;·&nbsp; Presión: {agg["pressure_won"]}/{agg["pressure_total"]} ({agg["pressure_pct"]:.0f}%)</div>',
-        unsafe_allow_html=True
-    )
+    surface_filter = st.selectbox("Superficie", ("Todas",) + SURFACES, index=0)
+    st.write("")
+
+    agg = history.aggregate(n=st.session_state.filter_n, surface=surface_filter)
+
+    # Header rings (rendered properly)
+    rings_html = f"""
+    <div class="ts-stats-header">
+      <div class="ts-ring-wrap">
+        {ring("Sets\\nGanados", agg["sets_pct"], f"{agg['sets_w']} de {agg['sets_w'] + agg['sets_l']}")}
+        {ring("Partidos\\nGanados", agg["matches_pct"], f"{agg['matches_win']} de {agg['matches_total']}")}
+        {ring("Juegos\\nGanados", agg["games_pct"], f"{agg['games_w']} de {agg['games_w'] + agg['games_l']}")}
+      </div>
+    </div>
+    """
+    st.markdown(rings_html, unsafe_allow_html=True)
+    st.write("")
+
+    # Summary
     fin = agg["finishes_sum"]
-    st.markdown(
-        f'<div class="muted">Winners {fin["winner"]} &nbsp;·&nbsp; ENF {fin["unforced"]} &nbsp;·&nbsp; EF {fin["forced"]} '
-        f'&nbsp;·&nbsp; Aces {fin["ace"]} &nbsp;·&nbsp; Dobles faltas {fin["double_fault"]}</div>',
-        unsafe_allow_html=True
+    card(
+        "Resumen (filtro actual)",
+        f"""
+        <div class="ts-muted">
+          Puntos: {agg['points_won']}/{agg['points_total']} ({agg['points_pct']:.0f}%)
+          &nbsp;&nbsp;·&nbsp;&nbsp;
+          Presión: {agg['pressure_won']}/{agg['pressure_total']} ({agg['pressure_pct']:.0f}%)
+        </div>
+        <div class="ts-muted" style="margin-top:6px;">
+          Winners {fin['winner']} · ENF {fin['unforced']} · EF {fin['forced']} · Aces {fin['ace']} · Dobles faltas {fin['double_fault']}
+        </div>
+        """,
     )
-    card_close()
+    st.write("")
 
-    # Racha últimos 10
-    card_open("Racha Últimos 10 Partidos")
-    results = hist.last_n_results(10, surface=(None if surf == "Todas" else surf))
+    # Streak
+    results = history.last_n_results(10, surface=(None if surface_filter == "Todas" else surface_filter))
     if not results:
-        st.markdown('<div class="muted">Aún no hay partidos guardados.</div>', unsafe_allow_html=True)
+        st.info("Aún no hay partidos guardados.")
     else:
-        dots_html = '<div class="dots">' + "".join(
-            ['<span class="dot w"></span>' if r == "W" else '<span class="dot"></span>' for r in results]
-        ) + "</div>"
-        st.markdown(dots_html, unsafe_allow_html=True)
-    card_close()
+        card("Racha Últimos 10 Partidos", "<div class='ts-muted'>" + " ".join(results) + "</div>")
 
-    # Mejor racha
-    card_open("Mejor Racha")
-    best = hist.best_streak(surface=(None if surf == "Todas" else surf))
-    st.markdown(f'<div class="big">{best} victorias seguidas</div>', unsafe_allow_html=True)
-    card_close()
+    st.write("")
+    best = history.best_streak(surface=(None if surface_filter == "Todas" else surface_filter))
+    card("Mejor Racha", f"<div style='font-size:18px; font-weight:900; color:#111;'>{best} victorias seguidas</div>")
 
-    # Superficies
-    card_open("Superficies")
-    order = ["Tierra batida", "Pista rápida", "Hierba", "Indoor"]
-    surf_map = agg["surfaces"]
+    st.write("")
+    # Surfaces table
+    order = list(SURFACES)
+    surf = agg["surfaces"]
+
     rows = []
     for srf in order:
-        w = surf_map.get(srf, {}).get("w", 0)
-        t_ = surf_map.get(srf, {}).get("t", 0)
-        pct0 = (w / t_ * 100.0) if t_ else 0.0
-        rows.append({"%": f"{pct0:.0f}%", "Etiqueta": f"Victorias en {srf}", "Cuenta": f"{w} de {t_}"})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    card_close()
+        w = surf.get(srf, {}).get("w", 0)
+        t_ = surf.get(srf, {}).get("t", 0)
+        pct_ = (w / t_ * 100.0) if t_ else 0.0
+        rows.append({"Superficie": srf, "Victorias": w, "Total": t_, "%": round(pct_, 0)})
 
+    df_s = pd.DataFrame(rows)
+    card("Superficies", "<div class='ts-muted'>Victorias por superficie (según el filtro).</div>")
+    st.dataframe(df_s, use_container_width=True, hide_index=True)
 
-# ==========================================================
-# MAIN
-# ==========================================================
-def main():
-    st.set_page_config(page_title="TennisStats", page_icon="🎾", layout="centered")
-    ensure_state()
-    inject_css()
-
-    page = st.session_state.page
-    if page == "analysis":
-        page_analysis()
-    elif page == "stats":
-        page_stats()
-    else:
-        page_live()
-
-
-if __name__ == "__main__":
-    main()
+    st.write("")
+    if st.button("⬅️ Volver a LIVE", use_container_width=True):
+        st.session_state.page = "LIVE"
+        st.rerun()
