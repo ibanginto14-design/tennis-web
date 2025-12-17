@@ -6,6 +6,7 @@ import secrets
 import hashlib
 import urllib.request
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import datetime
@@ -170,9 +171,7 @@ def fetch_tennis_news(max_items: int = 15):
                     link = _first_text(it, ["link"])
                     pub = _first_text(it, ["pubDate", "{http://purl.org/dc/elements/1.1/}date"])
                     if title and link:
-                        items.append(
-                            {"source": source_name, "title": title, "link": link, "published": pub}
-                        )
+                        items.append({"source": source_name, "title": title, "link": link, "published": pub})
                 continue
 
             # Atom (feed/entry)
@@ -181,11 +180,12 @@ def fetch_tennis_news(max_items: int = 15):
                 for entry in root.findall("a:entry", ns):
                     title = _first_text(entry, ["{http://www.w3.org/2005/Atom}title"])
                     link = _attr(entry, "{http://www.w3.org/2005/Atom}link", "href")
-                    pub = _first_text(entry, ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"])
+                    pub = _first_text(
+                        entry,
+                        ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"],
+                    )
                     if title and link:
-                        items.append(
-                            {"source": source_name, "title": title, "link": link, "published": pub}
-                        )
+                        items.append({"source": source_name, "title": title, "link": link, "published": pub})
         except Exception:
             continue
 
@@ -198,30 +198,6 @@ def fetch_tennis_news(max_items: int = 15):
         uniq.append(it)
 
     return uniq[:max_items]
-
-
-# ==========================================================
-# PSICO (PDFs)
-# ==========================================================
-PSICO_DIR = "psico_pdfs"
-PSICO_PDFS = [
-    "PINTER CURSO 25-26 - DiÃ¡logo interno.pdf",
-    "PINTER CURSO 25-26 - Deporte y drogas.pdf",
-    "PINTER CURSO 25-26 - Control de la activaciÃ³n.pdf",
-]
-
-
-def _pdf_to_iframe_bytes(pdf_bytes: bytes, height: int = 650) -> None:
-    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-    html = f"""
-    <iframe
-        src="data:application/pdf;base64,{b64}"
-        width="100%"
-        height="{height}"
-        style="border:0; border-radius: 10px;"
-    ></iframe>
-    """
-    st.components.v1.html(html, height=height + 20, scrolling=True)
 
 
 # ==========================================================
@@ -331,16 +307,7 @@ def _prob_set_from(p_rounded: float, g_me: int, g_opp: int, pts_me: int, pts_opp
 
 
 @lru_cache(maxsize=None)
-def _prob_match_bo3(
-    p_rounded: float,
-    sets_me: int,
-    sets_opp: int,
-    g_me: int,
-    g_opp: int,
-    pts_me: int,
-    pts_opp: int,
-    in_tb: bool,
-) -> float:
+def _prob_match_bo3(p_rounded: float, sets_me: int, sets_opp: int, g_me: int, g_opp: int, pts_me: int, pts_opp: int, in_tb: bool) -> float:
     if sets_me >= 2:
         return 1.0
     if sets_opp >= 2:
@@ -405,9 +372,7 @@ class LiveMatch:
         p = self.estimate_point_win_prob()
         p_r = round(p, 3)
         st_ = self.state
-        return _prob_match_bo3(
-            p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak
-        )
+        return _prob_match_bo3(p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak)
 
     def win_prob_series(self):
         probs = []
@@ -462,16 +427,7 @@ class LiveMatch:
         set_idx = before.sets_me + before.sets_opp + 1
         is_pressure = bool(before.in_tiebreak or (before.pts_me >= 3 and before.pts_opp >= 3))
 
-        self.points.append(
-            {
-                "result": result,
-                **meta,
-                "surface": self.surface,
-                "before": before.__dict__,
-                "set_idx": set_idx,
-                "pressure": is_pressure,
-            }
-        )
+        self.points.append({"result": result, **meta, "surface": self.surface, "before": before.__dict__, "set_idx": set_idx, "pressure": is_pressure})
 
         if result == "win":
             self.state.pts_me += 1
@@ -518,15 +474,7 @@ class LiveMatch:
         won = sum(1 for p in self.points if p["result"] == "win")
         pct = (won / total * 100.0) if total else 0.0
 
-        finishes = {
-            "winner": 0,
-            "unforced": 0,
-            "forced": 0,
-            "ace": 0,
-            "double_fault": 0,
-            "opp_error": 0,
-            "opp_winner": 0,
-        }
+        finishes = {"winner": 0, "unforced": 0, "forced": 0, "ace": 0, "double_fault": 0, "opp_error": 0, "opp_winner": 0}
 
         pressure_total = sum(1 for p in self.points if p.get("pressure"))
         pressure_won = sum(1 for p in self.points if p.get("pressure") and p.get("result") == "win")
@@ -609,15 +557,7 @@ class MatchHistory:
         pressure_total = sum(int(m.get("pressure_total", 0)) for m in matches)
         pressure_won = sum(int(m.get("pressure_won", 0)) for m in matches)
 
-        finishes_sum = {
-            "winner": 0,
-            "unforced": 0,
-            "forced": 0,
-            "ace": 0,
-            "double_fault": 0,
-            "opp_error": 0,
-            "opp_winner": 0,
-        }
+        finishes_sum = {"winner": 0, "unforced": 0, "forced": 0, "ace": 0, "double_fault": 0, "opp_error": 0, "opp_winner": 0}
         for m in matches:
             fin = (m.get("finishes") or {})
             for k in finishes_sum:
@@ -1080,29 +1020,24 @@ if st.session_state.page == "LIVE":
                     st.write("Modifica los campos y guarda.")
                     col1, col2 = st.columns(2, gap="small")
                     with col1:
-                        won_match = st.toggle("Victoria", value=bool(m.get("won_match", False)), key=f"edit_won_{m.get('id',i)}")
-                        sets_w = st.number_input("Sets Yo", 0, 5, value=int(m.get("sets_w", 0)), step=1, key=f"edit_sw_{m.get('id',i)}")
-                        games_w = st.number_input("Juegos Yo", 0, 50, value=int(m.get("games_w", 0)), step=1, key=f"edit_gw_{m.get('id',i)}")
+                        won_match = st.toggle("Victoria", value=bool(m.get("won_match", False)), key=f"edit_victoria_{m.get('id', i)}")
+                        sets_w = st.number_input("Sets Yo", 0, 5, value=int(m.get("sets_w", 0)), step=1, key=f"edit_sets_w_{m.get('id', i)}")
+                        games_w = st.number_input("Juegos Yo", 0, 50, value=int(m.get("games_w", 0)), step=1, key=f"edit_games_w_{m.get('id', i)}")
                     with col2:
-                        sets_l = st.number_input("Sets Rival", 0, 5, value=int(m.get("sets_l", 0)), step=1, key=f"edit_sl_{m.get('id',i)}")
-                        games_l = st.number_input("Juegos Rival", 0, 50, value=int(m.get("games_l", 0)), step=1, key=f"edit_gl_{m.get('id',i)}")
-                        surface = st.selectbox(
-                            "Superficie",
-                            SURFACES,
-                            index=SURFACES.index(m.get("surface", SURFACES[0])),
-                            key=f"edit_surface_{m.get('id',i)}",
-                        )
+                        sets_l = st.number_input("Sets Rival", 0, 5, value=int(m.get("sets_l", 0)), step=1, key=f"edit_sets_l_{m.get('id', i)}")
+                        games_l = st.number_input("Juegos Rival", 0, 50, value=int(m.get("games_l", 0)), step=1, key=f"edit_games_l_{m.get('id', i)}")
+                        surface = st.selectbox("Superficie", SURFACES, index=SURFACES.index(m.get("surface", SURFACES[0])), key=f"edit_surface_{m.get('id', i)}")
 
-                    date = st.text_input("Fecha (ISO)", value=str(m.get("date", "")), key=f"edit_date_{m.get('id',i)}")
+                    date = st.text_input("Fecha (ISO)", value=str(m.get("date", "")), key=f"edit_date_{m.get('id', i)}")
 
                     bL, bR = st.columns(2, gap="small")
                     with bL:
-                        if st.button("Cancelar edición", use_container_width=True, key=f"edit_cancel_{m.get('id',i)}"):
+                        if st.button("Cancelar edición", use_container_width=True, key=f"edit_cancel_{m.get('id', i)}"):
                             st.session_state._edit_open = False
                             st.session_state._edit_index = None
                             st.rerun()
                     with bR:
-                        if st.button("Guardar cambios", use_container_width=True, key=f"edit_save_{m.get('id',i)}"):
+                        if st.button("Guardar cambios", use_container_width=True, key=f"edit_save_{m.get('id', i)}"):
                             m["won_match"] = bool(won_match)
                             m["sets_w"] = int(sets_w)
                             m["sets_l"] = int(sets_l)
@@ -1269,38 +1204,48 @@ elif st.session_state.page == "NEWS":
 
 
 # ==========================================================
-# PAGE: PSICO
+# PAGE: PSICO  (FIX: listar TODOS los PDFs por bytes)
 # ==========================================================
 else:
     title_h("Psico")
     small_note("Material en PDF (visible y descargable).")
 
-    base = os.path.join(os.getcwd(), PSICO_DIR)
+    psico_dir = Path("psico_pdfs")
+    pdfs = []
+    if psico_dir.exists() and psico_dir.is_dir():
+        pdfs = sorted([p for p in psico_dir.glob("*.pdf") if p.is_file()], key=lambda x: x.name.lower())
+
     st.divider()
+    if not pdfs:
+        st.info("No se han encontrado PDFs en la carpeta `psico_pdfs/`. Sube los archivos al repo y redeploy.")
+    else:
+        for p in pdfs:
+            # clave estable y segura aunque haya tildes
+            k = hashlib.md5(p.name.encode("utf-8")).hexdigest()[:10]
+            with st.expander(f"📄 {p.name}", expanded=False):
+                try:
+                    data = p.read_bytes()
+                except Exception as e:
+                    st.error(f"No se pudo leer el PDF: {e}")
+                    continue
 
-    found_any = False
-    for fname in PSICO_PDFS:
-        fpath = os.path.join(base, fname)
-        if not os.path.exists(fpath):
-            continue
+                st.download_button(
+                    "⬇️ Descargar PDF",
+                    data=data,
+                    file_name=p.name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"psico_dl_{k}",
+                )
 
-        found_any = True
-        with open(fpath, "rb") as f:
-            pdf_bytes = f.read()
-
-        with st.expander(f"📄 {fname}", expanded=False):
-            st.download_button(
-                "⬇️ Descargar PDF",
-                data=pdf_bytes,
-                file_name=fname,
-                mime="application/pdf",
-                use_container_width=True,
-                key=f"psico_dl_{fname}",
-            )
-            st.caption("Vista previa:")
-            _pdf_to_iframe_bytes(pdf_bytes, height=650)
-
-    if not found_any:
-        st.warning(
-            f"No encuentro los PDFs. Asegúrate de subirlos a la carpeta **{PSICO_DIR}/** junto al `app.py`."
-        )
+                # visor embebido (data URI) -> no depende de rutas ni de caracteres raros
+                b64 = base64.b64encode(data).decode("utf-8")
+                html = f"""
+                <iframe
+                    src="data:application/pdf;base64,{b64}"
+                    width="100%"
+                    height="650"
+                    style="border: 1px solid rgba(0,0,0,0.08); border-radius: 10px;"
+                ></iframe>
+                """
+                st.components.v1.html(html, height=680, scrolling=False)
