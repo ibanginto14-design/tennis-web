@@ -50,9 +50,11 @@ DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 HIST_DIR = os.path.join(DATA_DIR, "histories")
 
+
 def ensure_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(HIST_DIR, exist_ok=True)
+
 
 def safe_user_key(username: str) -> str:
     u = (username or "").strip().lower()
@@ -60,16 +62,20 @@ def safe_user_key(username: str) -> str:
     u = re.sub(r"_+", "_", u).strip("_")
     return u[:40] if u else ""
 
+
 def _b64e(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
+
 
 def _b64d(s: str) -> bytes:
     s = s + "=" * (-len(s) % 4)
     return base64.urlsafe_b64decode(s.encode("utf-8"))
 
+
 def hash_pin(pin: str, salt_b: bytes) -> str:
     dk = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt_b, 200_000)
     return _b64e(dk)
+
 
 def load_users() -> dict:
     ensure_dirs()
@@ -82,14 +88,17 @@ def load_users() -> dict:
     except Exception:
         return {}
 
+
 def save_users(users: dict) -> None:
     ensure_dirs()
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
 
+
 def history_path_for(user_key: str) -> str:
     ensure_dirs()
     return os.path.join(HIST_DIR, f"history__{user_key}.json")
+
 
 def load_history_from_disk(user_key: str) -> list:
     path = history_path_for(user_key)
@@ -103,6 +112,7 @@ def load_history_from_disk(user_key: str) -> list:
     except Exception:
         return []
 
+
 def save_history_to_disk(user_key: str, matches: list) -> None:
     path = history_path_for(user_key)
     payload = {"matches": matches}
@@ -115,6 +125,7 @@ def save_history_to_disk(user_key: str, matches: list) -> None:
 # ==========================================================
 POINT_LABELS = {0: "0", 1: "15", 2: "30", 3: "40"}
 
+
 def game_point_label(p_me: int, p_opp: int) -> str:
     if p_me >= 3 and p_opp >= 3:
         if p_me == p_opp:
@@ -125,11 +136,14 @@ def game_point_label(p_me: int, p_opp: int) -> str:
             return "40-AD"
     return f"{POINT_LABELS.get(p_me, '40')}-{POINT_LABELS.get(p_opp, '40')}"
 
+
 def won_game(p_me: int, p_opp: int) -> bool:
     return p_me >= 4 and (p_me - p_opp) >= 2
 
+
 def won_tiebreak(p_me: int, p_opp: int) -> bool:
     return p_me >= 7 and (p_me - p_opp) >= 2
+
 
 def is_set_over(g_me: int, g_opp: int) -> bool:
     if g_me >= 6 and (g_me - g_opp) >= 2:
@@ -144,6 +158,7 @@ def is_set_over(g_me: int, g_opp: int) -> bool:
 # ==========================================================
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
+
 
 @lru_cache(maxsize=None)
 def _prob_game_from(p_rounded: float, a: int, b: int) -> float:
@@ -167,6 +182,7 @@ def _prob_game_from(p_rounded: float, a: int, b: int) -> float:
 
     return p * _prob_game_from(p_rounded, a + 1, b) + q * _prob_game_from(p_rounded, a, b + 1)
 
+
 @lru_cache(maxsize=None)
 def _prob_tiebreak_from(p_rounded: float, a: int, b: int) -> float:
     p = max(1e-6, min(1 - 1e-6, float(p_rounded)))
@@ -189,6 +205,7 @@ def _prob_tiebreak_from(p_rounded: float, a: int, b: int) -> float:
 
     return p * _prob_tiebreak_from(p_rounded, a + 1, b) + q * _prob_tiebreak_from(p_rounded, a, b + 1)
 
+
 @lru_cache(maxsize=None)
 def _prob_set_from(p_rounded: float, g_me: int, g_opp: int, pts_me: int, pts_opp: int, in_tb: bool) -> float:
     if is_set_over(g_me, g_opp):
@@ -207,6 +224,7 @@ def _prob_set_from(p_rounded: float, g_me: int, g_opp: int, pts_me: int, pts_opp
         return _prob_set_from(p_rounded, next_g_me, next_g_opp, 0, 0, False)
 
     return p_game * after_game(g_me + 1, g_opp) + (1 - p_game) * after_game(g_me, g_opp + 1)
+
 
 @lru_cache(maxsize=None)
 def _prob_match_bo3(
@@ -242,6 +260,7 @@ class LiveState:
     pts_me: int = 0
     pts_opp: int = 0
     in_tiebreak: bool = False
+
 
 class LiveMatch:
     def __init__(self):
@@ -522,6 +541,105 @@ class MatchHistory:
 
 
 # ==========================================================
+# NUEVO: Resumen tipo entrenador (basado en estadísticas)
+# ==========================================================
+def coach_summary_from_match(m: dict) -> str:
+    """Genera un resumen tipo entrenador usando SOLO stats del partido guardado."""
+    won = bool(m.get("won_match"))
+    res = "Victoria" if won else "Derrota"
+
+    pts_total = int(m.get("points_total", 0) or 0)
+    pts_won = int(m.get("points_won", 0) or 0)
+    pts_pct = float(m.get("points_pct", 0) or 0)
+
+    pressure_total = int(m.get("pressure_total", 0) or 0)
+    pressure_won = int(m.get("pressure_won", 0) or 0)
+    pressure_pct = float(m.get("pressure_pct", 0) or 0)
+
+    fin = (m.get("finishes") or {})
+    winners = int(fin.get("winner", 0) or 0)
+    enf = int(fin.get("unforced", 0) or 0)
+    ef = int(fin.get("forced", 0) or 0)
+    aces = int(fin.get("ace", 0) or 0)
+    df = int(fin.get("double_fault", 0) or 0)
+    opp_err = int(fin.get("opp_error", 0) or 0)
+    opp_w = int(fin.get("opp_winner", 0) or 0)
+
+    # Heurísticas simples (legibles)
+    strengths = []
+    focus = []
+
+    # Eficiencia puntos
+    if pts_pct >= 55:
+        strengths.append(f"dominaste el intercambio de puntos ({pts_pct:.0f}%).")
+    elif pts_pct <= 45 and pts_total >= 10:
+        focus.append(f"subir el % de puntos ganados ({pts_pct:.0f}%).")
+    else:
+        strengths.append(f"tu % de puntos estuvo equilibrado ({pts_pct:.0f}%).")
+
+    # Presión
+    if pressure_total >= 6:
+        if pressure_pct >= 55:
+            strengths.append(f"gestionaste muy bien la presión ({pressure_won}/{pressure_total}, {pressure_pct:.0f}%).")
+        elif pressure_pct <= 45:
+            focus.append(f"mejorar puntos de presión ({pressure_won}/{pressure_total}, {pressure_pct:.0f}%).")
+        else:
+            strengths.append(f"en presión estuviste parejo ({pressure_won}/{pressure_total}, {pressure_pct:.0f}%).")
+    elif pressure_total > 0:
+        strengths.append(f"en los pocos puntos de presión estuviste {pressure_won}/{pressure_total}.")
+    else:
+        strengths.append("hubo pocos puntos de presión registrados.")
+
+    # Winners vs errores
+    if winners >= max(5, enf + 2):
+        strengths.append("generaste muchos winners y fuiste ofensivo cuando tocaba.")
+    if enf >= max(5, winners + 2):
+        focus.append("reducir errores no forzados (ENF) en momentos clave.")
+    if df >= 3:
+        focus.append("controlar dobles faltas (ritual de saque + margen).")
+    if aces >= 3:
+        strengths.append("el saque fue un arma (aces).")
+
+    # Balance global
+    if (enf + df) > (winners + aces) and pts_total >= 15:
+        focus.append("buscar más margen: altura/profundidad y seleccionar mejor el riesgo.")
+    if opp_err >= 5 and winners < 3:
+        strengths.append("sacaste puntos provocando error del rival: buena consistencia.")
+
+    # Plan de 3 claves
+    plan = []
+    if "reducir errores no forzados (ENF) en momentos clave." in focus:
+        plan.append("1) Prioriza 2-3 pelotas de seguridad antes de acelerar (evita el 'todo o nada').")
+    else:
+        plan.append("1) Mantén tu patrón principal (consistencia + ataque cuando la bola sea clara).")
+
+    if any("presión" in x for x in focus):
+        plan.append("2) En deuce/tiebreak: rutina corta (respira, objetivo simple, juega al %).")
+    else:
+        plan.append("2) Sigue usando tu rutina en puntos importantes: claridad de objetivo por punto.")
+
+    if any("dobles faltas" in x for x in focus):
+        plan.append("3) Saque: 1º con dirección + 2º con más efecto/altura; mismo ritual siempre.")
+    else:
+        plan.append("3) Ajusta el saque según rival: alterna direcciones y busca el primer golpe tras el saque.")
+
+    # Texto final
+    s_txt = " ".join(strengths) if strengths else "buen partido en líneas generales."
+    f_txt = " ".join(focus) if focus else "pocos puntos débiles claros: sigue consolidando lo que funcionó."
+
+    return (
+        f"**Resumen del entrenador ({res})**\n\n"
+        f"- **Qué funcionó:** {s_txt}\n"
+        f"- **Qué mejorar:** {f_txt}\n\n"
+        f"**Claves para el próximo partido**\n"
+        f"{plan[0]}\n{plan[1]}\n{plan[2]}\n\n"
+        f"**Datos rápidos:** Puntos {pts_won}/{pts_total} ({pts_pct:.0f}%) · "
+        f"Presión {pressure_won}/{pressure_total} ({pressure_pct:.0f}%) · "
+        f"Winners {winners} · ENF {enf} · EF {ef} · Ace {aces} · DF {df}"
+    )
+
+
+# ==========================================================
 # SESSION STATE INIT
 # ==========================================================
 def ss_init():
@@ -540,9 +658,6 @@ def ss_init():
     if "authed" not in st.session_state:
         st.session_state.authed = False
 
-    # ✅ nuevo: estado del resumen
-    if "_open_summary" not in st.session_state:
-        st.session_state._open_summary = False
 
 ss_init()
 
@@ -557,11 +672,14 @@ FINISH_ITEMS = [
     ("opp_winner", "Winner rival"),
 ]
 
+
 def small_note(txt: str):
     st.markdown(f"<div class='small-note'>{txt}</div>", unsafe_allow_html=True)
 
+
 def title_h(txt: str):
     st.markdown(f"## {txt}")
+
 
 def nav_tiles():
     st.markdown("<div class='navwrap'><div class='navtitle'>Página</div></div>", unsafe_allow_html=True)
@@ -579,96 +697,6 @@ def nav_tiles():
             st.session_state.page = "STATS"
             st.rerun()
 
-# ==========================================================
-# RESUMEN LIVE (NUEVO)
-# ==========================================================
-def _top_finishes(fin: dict, k: int = 3):
-    items = [(name, int(fin.get(name, 0) or 0)) for name in fin.keys()]
-    items.sort(key=lambda x: x[1], reverse=True)
-    return [x for x in items if x[1] > 0][:k]
-
-def build_live_summary_text(live: LiveMatch) -> str:
-    st_ = live.state
-    total, won, pct = live.points_stats()
-    p_point = live.estimate_point_win_prob()
-    p_match = live.match_win_prob() * 100.0
-    report = live.match_summary()
-
-    pts_label = f"TB {st_.pts_me}-{st_.pts_opp}" if st_.in_tiebreak else game_point_label(st_.pts_me, st_.pts_opp)
-
-    pressure_total = report.get("pressure_total", 0)
-    pressure_won = report.get("pressure_won", 0)
-    pressure_pct = report.get("pressure_pct", 0.0)
-
-    fin = report.get("finishes", {}) or {}
-    top = _top_finishes(fin, 4)
-
-    # Heurísticas sencillas (orientativas)
-    if total < 6:
-        ritmo = "Muestra aún pequeña; el resumen es orientativo."
-    elif pct >= 58:
-        ritmo = "Dominio general del partido por puntos."
-    elif pct <= 42:
-        ritmo = "El rival está imponiendo el ritmo por puntos."
-    else:
-        ritmo = "Partido bastante igualado por puntos."
-
-    if pressure_total >= 6:
-        if pressure_pct >= 60:
-            clutch = "Buen rendimiento en momentos de presión (deuce/tiebreak)."
-        elif pressure_pct <= 40:
-            clutch = "A mejorar la gestión de momentos de presión (deuce/tiebreak)."
-        else:
-            clutch = "Rendimiento medio en presión; margen de mejora."
-    elif pressure_total > 0:
-        clutch = "Hay pocos puntos de presión aún; sigue registrando."
-    else:
-        clutch = "Aún no ha habido puntos de presión registrados."
-
-    # Señales por finishes
-    winners = int(fin.get("winner", 0) or 0)
-    unf = int(fin.get("unforced", 0) or 0)
-    df = int(fin.get("double_fault", 0) or 0)
-    ace = int(fin.get("ace", 0) or 0)
-
-    focus = []
-    if winners > unf + 2:
-        focus.append("Tu punto fuerte está siendo la **iniciativa (winners)**.")
-    if unf >= winners and total >= 8:
-        focus.append("Ojo: hay bastantes **errores no forzados**; prueba a subir % de primer golpe seguro.")
-    if df >= 2:
-        focus.append("Atención a la **doble falta**: simplifica segundo saque / rutina.")
-    if ace >= 2:
-        focus.append("El **saque** está sumando puntos gratis.")
-
-    if not focus:
-        focus.append("Sigue registrando finishes para un diagnóstico más fino.")
-
-    fin_line = " · ".join([f"{name}: {val}" for name, val in top]) if top else "—"
-
-    text = f"""
-**Marcador actual:** Sets {st_.sets_me}-{st_.sets_opp} · Juegos {st_.games_me}-{st_.games_opp} · Puntos {pts_label}  
-**Superficie:** {live.surface}
-
-**Rendimiento global:** {won}/{total} puntos ({pct:.0f}%).  
-**Modelo (orientativo):** p(punto)≈{p_point:.2f} · Win Prob≈{p_match:.1f}%.
-
-**Presión:** {pressure_won}/{pressure_total} ({pressure_pct:.0f}%) en deuce/tiebreak.  
-- {ritmo}  
-- {clutch}
-
-**Finishes (más frecuentes):** {fin_line}
-
-**Claves / ajustes recomendados:**
-- {focus[0]}
-"""
-    if len(focus) > 1:
-        for f in focus[1:]:
-            text += f"- {f}\n"
-
-    text += "\n**Objetivo para los próximos juegos:** 1) subir % de puntos “neutros” ganados, 2) mantener rutina en presión, 3) registrar bien el finish del punto."
-    return text.strip()
-
 
 # ==========================================================
 # AUTH UI
@@ -678,7 +706,6 @@ def auth_block():
     st.caption("Acceso privado por usuario (cada uno ve su propio historial).")
 
     users = load_users()
-
     tab_login, tab_register = st.tabs(["🔑 Entrar", "🆕 Crear usuario"])
 
     with tab_login:
@@ -764,7 +791,6 @@ with topR:
         st.session_state.auth_key = None
         st.session_state.page = "LIVE"
         st.session_state.finish = None
-        st.session_state._open_summary = False
         st.rerun()
 
 nav_tiles()
@@ -851,33 +877,18 @@ if st.session_state.page == "LIVE":
     st.divider()
 
     st.subheader("Acciones", anchor=False)
-    a1, a2, a3, a4 = st.columns(4, gap="small")
+    a1, a2, a3 = st.columns(3, gap="small")
     with a1:
         if st.button("↩️ Deshacer", use_container_width=True):
             live.undo()
             st.rerun()
     with a2:
-        if st.button("🧾 Resumen", use_container_width=True):
-            st.session_state._open_summary = True
-            st.rerun()
-    with a3:
-        if st.button("📈 Analysis", use_container_width=True):
+        if st.button("📈 Ir a Analysis", use_container_width=True):
             st.session_state.page = "ANALYSIS"
             st.rerun()
-    with a4:
+    with a3:
         if st.button("🏁 Finalizar", use_container_width=True):
             st.session_state._open_finish = True
-
-    # ✅ NUEVO: resumen live
-    if st.session_state.get("_open_summary", False):
-        with st.expander("🧾 Resumen del partido (según estadísticas)", expanded=True):
-            if len(live.points) == 0:
-                st.info("Aún no hay puntos registrados. Añade puntos para generar un resumen.")
-            else:
-                st.markdown(build_live_summary_text(live))
-            if st.button("Cerrar resumen", use_container_width=True):
-                st.session_state._open_summary = False
-                st.rerun()
 
     if st.session_state.get("_open_finish", False):
         with st.expander("Finalizar partido", expanded=True):
@@ -886,7 +897,7 @@ if st.session_state.page == "LIVE":
             sl = st.number_input("Sets Rival", 0, 5, value=int(live.state.sets_opp), step=1)
             gw = st.number_input("Juegos Yo", 0, 50, value=int(live.state.games_me), step=1)
             gl = st.number_input("Juegos Rival", 0, 50, value=int(live.state.games_opp), step=1)
-            surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURFACES.index(live.surface))
+            surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURACES.index(live.surface))
 
             s_left, s_right = st.columns(2, gap="small")
             with s_left:
@@ -942,6 +953,12 @@ if st.session_state.page == "LIVE":
                 fin_line = f"Winners {fin.get('winner',0)} · ENF {fin.get('unforced',0)} · EF {fin.get('forced',0)} · Ace {fin.get('ace',0)} · DF {fin.get('double_fault',0)}"
                 small_note(fin_line)
 
+                # NUEVO: botón resumen entrenador (por partido)
+                if st.button("🧠 Resumen tipo entrenador", key=f"coach_{m.get('id',real_i)}", use_container_width=True):
+                    st.session_state._coach_open = True
+                    st.session_state._coach_text = coach_summary_from_match(m)
+                    st.rerun()
+
                 e1, e2 = st.columns(2, gap="small")
                 with e1:
                     if st.button("✏️ Editar", key=f"edit_btn_{m.get('id',real_i)}", use_container_width=True):
@@ -954,6 +971,15 @@ if st.session_state.page == "LIVE":
                         save_history_to_disk(user_key, history.matches)
                         st.success("Partido borrado.")
                         st.rerun()
+
+        # NUEVO: panel resumen entrenador
+        if st.session_state.get("_coach_open", False):
+            with st.expander("🧠 Resumen del entrenador", expanded=True):
+                st.markdown(st.session_state.get("_coach_text", ""))
+                if st.button("Cerrar resumen", use_container_width=True):
+                    st.session_state._coach_open = False
+                    st.session_state._coach_text = ""
+                    st.rerun()
 
         if st.session_state.get("_edit_open", False):
             i = st.session_state.get("_edit_index", None)
