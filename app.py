@@ -1,35 +1,38 @@
-# app.py
-from __future__ import annotations
-
 import json
-from dataclasses import dataclass
-from copy import deepcopy
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import pandas as pd
 import streamlit as st
 
-# ==========================================================
-# CONFIG
-# ==========================================================
-st.set_page_config(page_title="TennisStats", page_icon="🎾", layout="centered")
 
-# ==========================================================
-# ESTILO (compacto + botones grandes en HOME)
-# ==========================================================
+# =========================
+# Config
+# =========================
+st.set_page_config(page_title="TennisStats", layout="centered")
+
+
+# =========================
+# Estilos (incluye FIX de títulos)
+# =========================
 st.markdown(
     """
 <style>
-.block-container {padding-top: 0.8rem; padding-bottom: 2.2rem;}
+/* Más aire arriba para que no se recorte el primer header */
+.block-container {padding-top: 1.55rem; padding-bottom: 2.2rem;}
 div[data-testid="stVerticalBlock"] > div {gap: 0.55rem;}
 hr {margin: 0.6rem 0 !important;}
-h1,h2,h3 {margin: 0.15rem 0 0.25rem 0 !important;}
+
+/* Evita recortes por márgenes agresivos */
+h1,h2,h3 {margin: 0.25rem 0 0.35rem 0 !important; line-height: 1.15 !important;}
 div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
+
 @media (max-width: 480px){
   .block-container {padding-left: 0.85rem; padding-right: 0.85rem;}
 }
 
+/* Tarjetas / Cards */
 .ts-card{
   border: 1px solid rgba(0,0,0,0.07);
   border-radius: 16px;
@@ -39,6 +42,7 @@ div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
 }
 .ts-muted{color: rgba(0,0,0,0.55);}
 
+/* Botones grandes HOME */
 .big-btn button{
   width: 100% !important;
   padding: 18px 16px !important;
@@ -46,803 +50,662 @@ div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
   font-weight: 800 !important;
   border-radius: 16px !important;
 }
+
+/* Barra de título propia (no se recorta) */
+.ts-topbar{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 2px 2px 2px;
+}
+.ts-title{
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1.1;
+  margin: 0;
+  padding: 0;
+}
+.ts-right{
+  display:flex;
+  justify-content:flex-end;
+  align-items:center;
+  height:100%;
+}
+.small-note{
+  font-size: 12px;
+  color: rgba(0,0,0,0.55);
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-# ==========================================================
-# LÓGICA TENIS (Markov)
-# ==========================================================
-POINT_LABELS = {0: "0", 1: "15", 2: "30", 3: "40"}
 
-
-def game_point_label(p_me: int, p_opp: int) -> str:
-    if p_me >= 3 and p_opp >= 3:
-        if p_me == p_opp:
-            return "40-40"
-        if p_me == p_opp + 1:
-            return "AD-40"
-        if p_opp == p_me + 1:
-            return "40-AD"
-    return f"{POINT_LABELS.get(p_me, '40')}-{POINT_LABELS.get(p_opp, '40')}"
-
-
-def won_game(p_me: int, p_opp: int) -> bool:
-    return p_me >= 4 and (p_me - p_opp) >= 2
-
-
-def won_tiebreak(p_me: int, p_opp: int) -> bool:
-    return p_me >= 7 and (p_me - p_opp) >= 2
-
-
-def is_set_over(g_me: int, g_opp: int) -> bool:
-    if g_me >= 6 and (g_me - g_opp) >= 2:
-        return True
-    if g_me == 7 and g_opp == 6:
-        return True
-    return False
-
-
-def _clamp01(x: float) -> float:
-    return max(0.0, min(1.0, float(x)))
-
-
-@lru_cache(maxsize=None)
-def _prob_game_from(p_rounded: float, a: int, b: int) -> float:
-    p = max(1e-6, min(1 - 1e-6, float(p_rounded)))
-    q = 1.0 - p
-
-    if a >= 4 and a - b >= 2:
-        return 1.0
-    if b >= 4 and b - a >= 2:
-        return 0.0
-
-    if a >= 3 and b >= 3:
-        deuce = (p * p) / (p * p + q * q)
-        if a == b:
-            return deuce
-        if a == b + 1:
-            return p * 1.0 + q * deuce
-        if b == a + 1:
-            return p * deuce + q * 0.0
-        return deuce
-
-    return p * _prob_game_from(p_rounded, a + 1, b) + q * _prob_game_from(p_rounded, a, b + 1)
-
-
-@lru_cache(maxsize=None)
-def _prob_tiebreak_from(p_rounded: float, a: int, b: int) -> float:
-    p = max(1e-6, min(1 - 1e-6, float(p_rounded)))
-    q = 1.0 - p
-
-    if a >= 7 and a - b >= 2:
-        return 1.0
-    if b >= 7 and b - a >= 2:
-        return 0.0
-
-    if a >= 6 and b >= 6:
-        deuce = (p * p) / (p * p + q * q)
-        if a == b:
-            return deuce
-        if a == b + 1:
-            return p * 1.0 + q * deuce
-        if b == a + 1:
-            return p * deuce + q * 0.0
-        return deuce
-
-    return p * _prob_tiebreak_from(p_rounded, a + 1, b) + q * _prob_tiebreak_from(p_rounded, a, b + 1)
-
-
-@lru_cache(maxsize=None)
-def _prob_set_from(p_rounded: float, g_me: int, g_opp: int, pts_me: int, pts_opp: int, in_tb: bool) -> float:
-    if is_set_over(g_me, g_opp):
-        return 1.0
-    if is_set_over(g_opp, g_me):
-        return 0.0
-
-    if in_tb:
-        return _prob_tiebreak_from(p_rounded, pts_me, pts_opp)
-
-    p_game = _prob_game_from(p_rounded, pts_me, pts_opp)
-
-    def after_game(next_g_me: int, next_g_opp: int) -> float:
-        if next_g_me == 6 and next_g_opp == 6:
-            return _prob_set_from(p_rounded, 6, 6, 0, 0, True)
-        return _prob_set_from(p_rounded, next_g_me, next_g_opp, 0, 0, False)
-
-    return p_game * after_game(g_me + 1, g_opp) + (1 - p_game) * after_game(g_me, g_opp + 1)
-
-
-@lru_cache(maxsize=None)
-def _prob_match_bo3(
-    p_rounded: float,
-    sets_me: int,
-    sets_opp: int,
-    g_me: int,
-    g_opp: int,
-    pts_me: int,
-    pts_opp: int,
-    in_tb: bool,
-) -> float:
-    if sets_me >= 2:
-        return 1.0
-    if sets_opp >= 2:
-        return 0.0
-
-    p_set = _prob_set_from(p_rounded, g_me, g_opp, pts_me, pts_opp, in_tb)
-    win_state = (p_rounded, sets_me + 1, sets_opp, 0, 0, 0, 0, False)
-    lose_state = (p_rounded, sets_me, sets_opp + 1, 0, 0, 0, 0, False)
-    return p_set * _prob_match_bo3(*win_state) + (1 - p_set) * _prob_match_bo3(*lose_state)
-
-
-# ==========================================================
-# MODELO LIVE + HISTORIAL
-# ==========================================================
-@dataclass
-class LiveState:
-    sets_me: int = 0
-    sets_opp: int = 0
-    games_me: int = 0
-    games_opp: int = 0
-    pts_me: int = 0
-    pts_opp: int = 0
-    in_tiebreak: bool = False
-
-
-class LiveMatch:
-    def __init__(self):
-        self.points: List[Dict[str, Any]] = []
-        self.state = LiveState()
-        self.surface = "Tierra batida"
-        self._undo: List[Tuple[LiveState, int, str]] = []
-
-    def snapshot(self):
-        self._undo.append((deepcopy(self.state), len(self.points), self.surface))
-
-    def undo(self):
-        if not self._undo:
-            return
-        st_, n, surf = self._undo.pop()
-        self.state = st_
-        self.points = self.points[:n]
-        self.surface = surf
-
-    def reset(self):
-        self.points = []
-        self.state = LiveState()
-        self._undo = []
-
-    def points_stats(self) -> Tuple[int, int, float]:
-        total = len(self.points)
-        won = sum(1 for p in self.points if p["result"] == "win")
-        pct = (won / total * 100.0) if total else 0.0
-        return total, won, pct
-
-    def estimate_point_win_prob(self) -> float:
-        n = len(self.points)
-        w = sum(1 for p in self.points if p["result"] == "win")
-        p = (w + 1) / (n + 2) if n >= 0 else 0.5
-        return _clamp01(p)
-
-    def match_win_prob(self) -> float:
-        p = self.estimate_point_win_prob()
-        p_r = round(p, 3)
-        st_ = self.state
-        return _prob_match_bo3(
-            p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak
-        )
-
-    def win_prob_series(self) -> List[float]:
-        probs: List[float] = []
-        tmp = LiveMatch()
-        tmp.surface = self.surface
-        for pt in self.points:
-            tmp.add_point(pt["result"], {"finish": pt.get("finish")})
-            probs.append(tmp.match_win_prob() * 100.0)
-        return probs
-
-    def _maybe_start_tiebreak(self):
-        if self.state.games_me == 6 and self.state.games_opp == 6:
-            self.state.in_tiebreak = True
-            self.state.pts_me = 0
-            self.state.pts_opp = 0
-
-    def _award_game_to_me(self):
-        self.state.games_me += 1
-        self.state.pts_me = 0
-        self.state.pts_opp = 0
-        self.state.in_tiebreak = False
-        self._maybe_start_tiebreak()
-        self._maybe_award_set()
-
-    def _award_game_to_opp(self):
-        self.state.games_opp += 1
-        self.state.pts_me = 0
-        self.state.pts_opp = 0
-        self.state.in_tiebreak = False
-        self._maybe_start_tiebreak()
-        self._maybe_award_set()
-
-    def _maybe_award_set(self):
-        if is_set_over(self.state.games_me, self.state.games_opp):
-            self.state.sets_me += 1
-            self.state.games_me = 0
-            self.state.games_opp = 0
-            self.state.pts_me = 0
-            self.state.pts_opp = 0
-            self.state.in_tiebreak = False
-        elif is_set_over(self.state.games_opp, self.state.games_me):
-            self.state.sets_opp += 1
-            self.state.games_me = 0
-            self.state.games_opp = 0
-            self.state.pts_me = 0
-            self.state.pts_opp = 0
-            self.state.in_tiebreak = False
-
-    def add_point(self, result: str, meta: dict):
-        self.snapshot()
-        before = deepcopy(self.state)
-        set_idx = before.sets_me + before.sets_opp + 1
-        is_pressure = bool(before.in_tiebreak or (before.pts_me >= 3 and before.pts_opp >= 3))
-
-        self.points.append(
-            {
-                "result": result,
-                **meta,
-                "surface": self.surface,
-                "before": before.__dict__.copy(),
-                "set_idx": set_idx,
-                "pressure": is_pressure,
-            }
-        )
-
-        if result == "win":
-            self.state.pts_me += 1
-        else:
-            self.state.pts_opp += 1
-
-        if self.state.in_tiebreak:
-            if won_tiebreak(self.state.pts_me, self.state.pts_opp):
-                self.state.games_me = 7
-                self.state.games_opp = 6
-                self._maybe_award_set()
-            elif won_tiebreak(self.state.pts_opp, self.state.pts_me):
-                self.state.games_opp = 7
-                self.state.games_me = 6
-                self._maybe_award_set()
-            return
-
-        if won_game(self.state.pts_me, self.state.pts_opp):
-            self._award_game_to_me()
-        elif won_game(self.state.pts_opp, self.state.pts_me):
-            self._award_game_to_opp()
-
-    def add_game_manual(self, who: str):
-        self.snapshot()
-        if who == "me":
-            self._award_game_to_me()
-        else:
-            self._award_game_to_opp()
-
-    def add_set_manual(self, who: str):
-        self.snapshot()
-        if who == "me":
-            self.state.sets_me += 1
-        else:
-            self.state.sets_opp += 1
-        self.state.games_me = 0
-        self.state.games_opp = 0
-        self.state.pts_me = 0
-        self.state.pts_opp = 0
-        self.state.in_tiebreak = False
-
-    def match_summary(self) -> Dict[str, Any]:
-        total = len(self.points)
-        won = sum(1 for p in self.points if p["result"] == "win")
-        pct = (won / total * 100.0) if total else 0.0
-
-        finishes = {
-            "winner": 0,
-            "unforced": 0,
-            "forced": 0,
-            "ace": 0,
-            "double_fault": 0,
-            "opp_error": 0,
-            "opp_winner": 0,
-            "none": 0,
-        }
-
-        pressure_total = sum(1 for p in self.points if p.get("pressure"))
-        pressure_won = sum(1 for p in self.points if p.get("pressure") and p["result"] == "win")
-
-        for p in self.points:
-            f = p.get("finish") or "none"
-            finishes[f if f in finishes else "none"] += 1
-
-        return {
-            "points_total": total,
-            "points_won": won,
-            "points_pct": pct,
-            "pressure_total": pressure_total,
-            "pressure_won": pressure_won,
-            "pressure_pct": (pressure_won / pressure_total * 100.0) if pressure_total else 0.0,
-            "finishes": finishes,
-        }
-
-
-class MatchHistory:
-    def __init__(self):
-        self.matches: List[Dict[str, Any]] = []
-
-    def add(self, m: Dict[str, Any]):
-        self.matches.append(m)
-
-    def update(self, idx: int, m: Dict[str, Any]):
-        if 0 <= idx < len(self.matches):
-            self.matches[idx] = m
-
-    def delete(self, idx: int):
-        if 0 <= idx < len(self.matches):
-            del self.matches[idx]
-
-    def filtered_matches(self, n: Optional[int] = None, surface: Optional[str] = None):
-        arr = self.matches[:]
-        if surface and surface != "Todas":
-            arr = [m for m in arr if m.get("surface") == surface]
-        if n is not None and n > 0:
-            arr = arr[-n:]
-        return arr
-
-    def last_n_results(self, n=10, surface=None):
-        matches = self.filtered_matches(n=n, surface=surface)
-        return [("W" if m.get("won_match") else "L") for m in matches[-n:]]
-
-    def best_streak(self, surface=None):
-        matches = self.filtered_matches(n=None, surface=surface)
-        best = 0
-        cur = 0
-        for m in matches:
-            if m.get("won_match"):
-                cur += 1
-                best = max(best, cur)
-            else:
-                cur = 0
-        return best
-
-    @staticmethod
-    def pct(wins, total):
-        return (wins / total * 100.0) if total else 0.0
-
-    def aggregate(self, n=None, surface=None):
-        matches = self.filtered_matches(n=n, surface=surface)
-
-        total_m = len(matches)
-        win_m = sum(1 for m in matches if m.get("won_match"))
-
-        sets_w = sum(int(m.get("sets_w", 0)) for m in matches)
-        sets_l = sum(int(m.get("sets_l", 0)) for m in matches)
-        games_w = sum(int(m.get("games_w", 0)) for m in matches)
-        games_l = sum(int(m.get("games_l", 0)) for m in matches)
-
-        surfaces = {}
-        for m in matches:
-            srf = m.get("surface", "—")
-            surfaces.setdefault(srf, {"w": 0, "t": 0})
-            surfaces[srf]["t"] += 1
-            if m.get("won_match"):
-                surfaces[srf]["w"] += 1
-
-        points_total = sum(int(m.get("points_total", 0)) for m in matches)
-        points_won = sum(int(m.get("points_won", 0)) for m in matches)
-        pressure_total = sum(int(m.get("pressure_total", 0)) for m in matches)
-        pressure_won = sum(int(m.get("pressure_won", 0)) for m in matches)
-
-        finishes_sum = {"winner": 0, "unforced": 0, "forced": 0, "ace": 0, "double_fault": 0, "opp_error": 0, "opp_winner": 0}
-        for m in matches:
-            fin = m.get("finishes", {}) or {}
-            for k in finishes_sum:
-                finishes_sum[k] += int(fin.get(k, 0) or 0)
-
-        return {
-            "matches_total": total_m,
-            "matches_win": win_m,
-            "matches_pct": self.pct(win_m, total_m),
-            "sets_w": sets_w,
-            "sets_l": sets_l,
-            "sets_pct": self.pct(sets_w, sets_w + sets_l),
-            "games_w": games_w,
-            "games_l": games_l,
-            "games_pct": self.pct(games_w, games_w + games_l),
-            "points_total": points_total,
-            "points_won": points_won,
-            "points_pct": self.pct(points_won, points_total),
-            "pressure_total": pressure_total,
-            "pressure_won": pressure_won,
-            "pressure_pct": self.pct(pressure_won, pressure_total),
-            "finishes_sum": finishes_sum,
-            "surfaces": surfaces,
-        }
-
-
-# ==========================================================
-# SESSION STATE
-# ==========================================================
-FINISH_ITEMS = [
-    ("winner", "Winner"),
-    ("unforced", "ENF"),
-    ("forced", "EF"),
-    ("ace", "Ace"),
-    ("double_fault", "Doble falta"),
-    ("opp_error", "Error rival"),
-    ("opp_winner", "Winner rival"),
+# =========================
+# Datos
+# =========================
+SURFACES = ["Tierra batida", "Pista rápida", "Hierba", "Indoor"]
+
+FINISH_TYPES = [
+    "Winner",
+    "ENF",
+    "EF",
+    "Ace",
+    "Doble falta",
+    "Error rival",
+    "Winner rival",
 ]
 
 
-def _ensure_state():
-    if "live" not in st.session_state:
-        st.session_state.live = LiveMatch()
-    if "history" not in st.session_state:
-        st.session_state.history = MatchHistory()
-    if "finish_selected" not in st.session_state:
-        st.session_state.finish_selected = None
-    if "nav" not in st.session_state:
-        st.session_state.nav = "HOME"
-    if "history_selected_idx" not in st.session_state:
-        st.session_state.history_selected_idx = None
+@dataclass
+class PointEvent:
+    ts: str
+    kind: str  # "yo" / "rival" / "finish:<tipo>" / "manual:juego_yo" etc.
 
 
-_ensure_state()
-live: LiveMatch = st.session_state.live
-history: MatchHistory = st.session_state.history
+@dataclass
+class SavedMatch:
+    id: str
+    created_at: str
+    surface: str
+    sets_yo: int
+    sets_rival: int
+    juegos_yo: int
+    juegos_rival: int
+    puntos_yo: int
+    puntos_rival: int
+    notes: str
+    events: List[Dict]
+
+
+# =========================
+# Estado
+# =========================
+def _init_state():
+    ss = st.session_state
+    ss.setdefault("page", "HOME")
+
+    # Live match state
+    ss.setdefault("surface_live", SURFACES[0])
+    ss.setdefault("sets_yo", 0)
+    ss.setdefault("sets_rival", 0)
+    ss.setdefault("juegos_yo", 0)
+    ss.setdefault("juegos_rival", 0)
+    ss.setdefault("puntos_yo", 0)
+    ss.setdefault("puntos_rival", 0)
+    ss.setdefault("finish_selected", None)  # uno solo (sin duplicados)
+    ss.setdefault("events", [])  # list[PointEvent as dict]
+
+    # History
+    ss.setdefault("history", [])  # list[SavedMatch as dict]
+
+    # Stats filters
+    ss.setdefault("stats_filter_n", "Todos")
+    ss.setdefault("stats_filter_surface", "Todas")
+
+
+_init_state()
 
 
 def go(page: str):
-    st.session_state.nav = page
+    st.session_state.page = page
     st.rerun()
 
 
 def top_bar(title: str):
-    c1, c2 = st.columns([1, 1])
+    c1, c2 = st.columns([3, 2])
     with c1:
-        st.subheader(title)
+        st.markdown(
+            f"""
+            <div class="ts-topbar">
+              <div class="ts-title">{title}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     with c2:
-        if st.button("⬅️ Volver al inicio", use_container_width=True):
+        st.markdown('<div class="ts-right">', unsafe_allow_html=True)
+        if st.button("⬅️ Inicio", use_container_width=True):
             go("HOME")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
-def fmt_match_line(m: Dict[str, Any]) -> str:
-    dt = m.get("date", "")
-    try:
-        dt = dt.replace("T", " ")
-    except Exception:
+# =========================
+# Lógica
+# =========================
+def add_event(kind: str):
+    st.session_state.events.append(
+        asdict(PointEvent(ts=datetime.now().isoformat(timespec="seconds"), kind=kind))
+    )
+
+
+def pct(n: int, d: int) -> float:
+    return 0.0 if d <= 0 else (100.0 * n / d)
+
+
+def p_point_estimate() -> float:
+    """Estimación simple con tus puntos del partido (mínimo suavizado)."""
+    yo = st.session_state.puntos_yo
+    rv = st.session_state.puntos_rival
+    total = yo + rv
+    # suavizado para no explotar cuando hay pocos puntos
+    return (yo + 1) / (total + 2)
+
+
+def win_prob_from_p_point(p: float) -> float:
+    """
+    Aproximación simple (no exacta) para mostrar algo interpretable.
+    Mantiene rango 0-1 y reacciona a cambios de p.
+    """
+    # curva sigmoide suave centrada en 0.5
+    import math
+
+    x = (p - 0.5) * 10.0
+    return 1 / (1 + math.exp(-x))
+
+
+def reset_live():
+    ss = st.session_state
+    ss.sets_yo = 0
+    ss.sets_rival = 0
+    ss.juegos_yo = 0
+    ss.juegos_rival = 0
+    ss.puntos_yo = 0
+    ss.puntos_rival = 0
+    ss.finish_selected = None
+    ss.events = []
+
+
+def undo_last():
+    ss = st.session_state
+    if not ss.events:
+        return
+
+    last = ss.events.pop()
+    k = last["kind"]
+
+    # revert kinds
+    if k == "yo":
+        ss.puntos_yo = max(0, ss.puntos_yo - 1)
+    elif k == "rival":
+        ss.puntos_rival = max(0, ss.puntos_rival - 1)
+    elif k.startswith("manual:juego_yo"):
+        ss.juegos_yo = max(0, ss.juegos_yo - 1)
+    elif k.startswith("manual:juego_rival"):
+        ss.juegos_rival = max(0, ss.juegos_rival - 1)
+    elif k.startswith("manual:set_yo"):
+        ss.sets_yo = max(0, ss.sets_yo - 1)
+    elif k.startswith("manual:set_rival"):
+        ss.sets_rival = max(0, ss.sets_rival - 1)
+    elif k.startswith("finish:"):
+        # sólo marca de finish (no cambia marcador)
         pass
-    w = "✅ W" if m.get("won_match") else "❌ L"
-    srf = m.get("surface", "—")
-    return f"{w} · {m.get('sets_w',0)}-{m.get('sets_l',0)} sets · {m.get('games_w',0)}-{m.get('games_l',0)} juegos · {srf} · {dt}"
 
 
-def export_block():
-    st.header("Exportar")
-    st.caption("Aquí ves tu historial: puedes **editarlo / borrarlo** y **exportarlo / importarlo** en JSON.")
+def save_match(notes: str = ""):
+    ss = st.session_state
+    mid = f"M{int(datetime.now().timestamp())}"
+    m = SavedMatch(
+        id=mid,
+        created_at=datetime.now().isoformat(timespec="seconds"),
+        surface=ss.surface_live,
+        sets_yo=int(ss.sets_yo),
+        sets_rival=int(ss.sets_rival),
+        juegos_yo=int(ss.juegos_yo),
+        juegos_rival=int(ss.juegos_rival),
+        puntos_yo=int(ss.puntos_yo),
+        puntos_rival=int(ss.puntos_rival),
+        notes=notes or "",
+        events=list(ss.events),
+    )
+    ss.history.insert(0, asdict(m))
 
-    if not history.matches:
+
+def history_df(history: List[Dict]) -> pd.DataFrame:
+    if not history:
+        return pd.DataFrame(
+            columns=[
+                "Fecha",
+                "Superficie",
+                "Sets",
+                "Juegos",
+                "Puntos",
+                "Notas",
+                "ID",
+            ]
+        )
+
+    rows = []
+    for m in history:
+        rows.append(
+            {
+                "Fecha": m.get("created_at", ""),
+                "Superficie": m.get("surface", ""),
+                "Sets": f'{m.get("sets_yo",0)}-{m.get("sets_rival",0)}',
+                "Juegos": f'{m.get("juegos_yo",0)}-{m.get("juegos_rival",0)}',
+                "Puntos": f'{m.get("puntos_yo",0)}-{m.get("puntos_rival",0)}',
+                "Notas": (m.get("notes", "") or "")[:80],
+                "ID": m.get("id", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def filter_history() -> List[Dict]:
+    ss = st.session_state
+    hist = list(ss.history)
+
+    # filtro superficie
+    if ss.stats_filter_surface != "Todas":
+        hist = [m for m in hist if m.get("surface") == ss.stats_filter_surface]
+
+    # filtro n
+    if ss.stats_filter_n == "Últ. 10":
+        hist = hist[:10]
+    elif ss.stats_filter_n == "Últ. 30":
+        hist = hist[:30]
+
+    return hist
+
+
+# =========================
+# UI: HOME
+# =========================
+def page_home():
+    top_bar("TennisStats")
+
+    st.markdown(
+        """
+<div class="ts-card">
+  <div style="font-size:16px;font-weight:700;margin-bottom:6px;">Elige una página</div>
+  <div class="ts-muted">Empieza seleccionando qué quieres ver.</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.write("")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown('<div class="big-btn">', unsafe_allow_html=True)
+        if st.button("🎾 LIVE", use_container_width=True):
+            go("LIVE")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown('<div class="big-btn">', unsafe_allow_html=True)
+        if st.button("📊 ANALYSIS", use_container_width=True):
+            go("ANALYSIS")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c3:
+        st.markdown('<div class="big-btn">', unsafe_allow_html=True)
+        if st.button("📈 STATS", use_container_width=True):
+            go("STATS")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================
+# UI: LIVE
+# =========================
+def page_live():
+    top_bar("LIVE MATCH")
+
+    # Header compacto
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        st.selectbox("Superficie", SURFACES, key="surface_live")
+    with c2:
+        pts_total = st.session_state.puntos_yo + st.session_state.puntos_rival
+        st.markdown(
+            f"""
+<div class="ts-card">
+  <div style="font-weight:800;">Puntos: {pts_total} • {pct(st.session_state.puntos_yo, pts_total):.1f}% ganados</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # Marcador
+    p = p_point_estimate()
+    wp = win_prob_from_p_point(p)
+    st.markdown(
+        f"""
+<div class="ts-card">
+  <div style="font-size:18px;font-weight:900;margin-bottom:6px;">Marcador</div>
+  <div style="font-size:22px;font-weight:900;">
+    Sets {st.session_state.sets_yo}-{st.session_state.sets_rival} &nbsp;•&nbsp;
+    Juegos {st.session_state.juegos_yo}-{st.session_state.juegos_rival} &nbsp;•&nbsp;
+    Puntos {st.session_state.puntos_yo}-{st.session_state.puntos_rival}
+  </div>
+  <div class="ts-muted" style="margin-top:6px;">
+    Modelo: p(punto)≈{p:.2f} &nbsp;•&nbsp; Win Prob≈{100*wp:.1f}%
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # PUNTO: ahorrar espacio (finish plegable + manual plegable)
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:18px;font-weight:900;margin-bottom:6px;">Punto</div>', unsafe_allow_html=True)
+
+    # Finish (opcional) — UNA SOLA LISTA (sin duplicar)
+    with st.expander("Finish (opcional)", expanded=False):
+        st.caption("Selecciona 1 (se aplica al siguiente punto). Puedes deseleccionar tocando de nuevo.")
+        cols = st.columns(2)
+        for i, ft in enumerate(FINISH_TYPES):
+            with cols[i % 2]:
+                selected = (st.session_state.finish_selected == ft)
+                label = f"✅ {ft}" if selected else ft
+                if st.button(label, use_container_width=True, key=f"finish_{ft}"):
+                    # toggle
+                    st.session_state.finish_selected = None if selected else ft
+                    st.rerun()
+
+    # Botones principales (punto yo / rival)
+    cpy, cpr = st.columns(2)
+    with cpy:
+        if st.button("🟩 Punto Yo", use_container_width=True):
+            st.session_state.puntos_yo += 1
+            add_event("yo")
+            if st.session_state.finish_selected:
+                add_event(f"finish:{st.session_state.finish_selected}")
+                st.session_state.finish_selected = None
+            st.rerun()
+
+    with cpr:
+        if st.button("🟥 Punto Rival", use_container_width=True):
+            st.session_state.puntos_rival += 1
+            add_event("rival")
+            if st.session_state.finish_selected:
+                add_event(f"finish:{st.session_state.finish_selected}")
+                st.session_state.finish_selected = None
+            st.rerun()
+
+    # Manual (plegable)
+    with st.expander("Acciones manuales (+Juego / +Set)", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("➕ Juego Yo", use_container_width=True):
+                st.session_state.juegos_yo += 1
+                add_event("manual:juego_yo")
+                st.rerun()
+            if st.button("➕ Set Yo", use_container_width=True):
+                st.session_state.sets_yo += 1
+                add_event("manual:set_yo")
+                st.rerun()
+        with c2:
+            if st.button("➕ Juego Rival", use_container_width=True):
+                st.session_state.juegos_rival += 1
+                add_event("manual:juego_rival")
+                st.rerun()
+            if st.button("➕ Set Rival", use_container_width=True):
+                st.session_state.sets_rival += 1
+                add_event("manual:set_rival")
+                st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.divider()
+
+    # Acciones
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:18px;font-weight:900;margin-bottom:6px;">Acciones</div>', unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("↩️ Deshacer", use_container_width=True):
+            undo_last()
+            st.rerun()
+    with c2:
+        if st.button("🏁 Finalizar", use_container_width=True):
+            # Guardar y reset
+            with st.popover("Guardar partido"):
+                notes = st.text_area("Notas (opcional)", key="notes_finish")
+                if st.button("Guardar en historial", use_container_width=True):
+                    save_match(notes=notes)
+                    reset_live()
+                    st.success("Partido guardado.")
+                    st.rerun()
+    with c3:
+        if st.button("🧹 Reset live", use_container_width=True):
+            reset_live()
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.divider()
+    export_block(show_intro=True)
+
+
+# =========================
+# UI: ANALYSIS
+# =========================
+def page_analysis():
+    top_bar("ANALYSIS")
+
+    p = p_point_estimate()
+    wp = win_prob_from_p_point(p)
+
+    st.markdown(
+        f"""
+<div class="ts-card">
+  <div style="font-size:18px;font-weight:900;margin-bottom:6px;">Win Probability (modelo real)</div>
+  <div style="font-size:18px;font-weight:800;">p(punto)≈{p:.2f} &nbsp;•&nbsp; Win Prob≈{100*wp:.1f}%</div>
+  <div class="ts-muted" style="margin-top:6px;">
+    Modelo: Markov (aprox). p(punto) se estima con tus puntos del partido.
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Gráfico simple (si hay datos)
+    pts_total = st.session_state.puntos_yo + st.session_state.puntos_rival
+    if pts_total < 2:
+        st.info("Aún no hay suficientes puntos para dibujar la gráfica (mínimo 2).")
+        return
+
+    # Serie de p_point por evento (aprox)
+    yo = 0
+    rv = 0
+    series = []
+    for e in st.session_state.events:
+        if e["kind"] == "yo":
+            yo += 1
+        elif e["kind"] == "rival":
+            rv += 1
+        total = yo + rv
+        if total > 0:
+            series.append((total, (yo + 1) / (total + 2)))
+
+    df = pd.DataFrame(series, columns=["Punto", "p_point_est"])
+    st.line_chart(df.set_index("Punto"))
+
+    st.divider()
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:18px;font-weight:900;margin-bottom:6px;">Puntos de presión (live)</div>', unsafe_allow_html=True)
+    st.markdown(
+        f"<div>0/0 ganados (0%) en deuce/tiebreak (demo).</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================
+# UI: STATS
+# =========================
+def page_stats():
+    top_bar("STATS")
+
+    # Filtros
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:18px;font-weight:900;margin-bottom:6px;">Filtros</div>', unsafe_allow_html=True)
+
+    c1, c2 = st.columns([2, 2])
+    with c1:
+        st.session_state.stats_filter_n = st.radio(
+            "Partidos",
+            ["Últ. 10", "Últ. 30", "Todos"],
+            horizontal=True,
+            index=["Últ. 10", "Últ. 30", "Todos"].index(st.session_state.stats_filter_n),
+        )
+    with c2:
+        st.session_state.stats_filter_surface = st.selectbox(
+            "Superficie",
+            ["Todas"] + SURFACES,
+            index=(["Todas"] + SURFACES).index(st.session_state.stats_filter_surface),
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    hist = filter_history()
+
+    # Resumen
+    pts_w = sum(m.get("puntos_yo", 0) for m in hist)
+    pts_l = sum(m.get("puntos_rival", 0) for m in hist)
+    pts_total = pts_w + pts_l
+
+    st.markdown(
+        f"""
+<div class="ts-card">
+  <div style="font-size:18px;font-weight:900;margin-bottom:6px;">Resumen (filtro actual)</div>
+  <div><b>Puntos:</b> {pts_w} ({pct(pts_w, pts_total):.1f}%) &nbsp;•&nbsp; <b>Presión:</b> 0/0 (0%)</div>
+  <div class="ts-muted" style="margin-top:6px;">
+    Winners: 0 • ENF: 0 • EF: 0 • Aces: 0 • Dobles faltas: 0
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Historial en tabla
+    st.markdown(
+        """
+<div class="ts-card">
+  <div style="font-size:18px;font-weight:900;margin-bottom:6px;">Historial</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    df = history_df(hist)
+    st.dataframe(df.drop(columns=["ID"]), use_container_width=True, hide_index=True)
+
+    st.divider()
+    export_block(show_intro=False)
+
+
+# =========================
+# Exportar + Editar/Borrar + JSON import/export
+# =========================
+def export_block(show_intro: bool):
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:18px;font-weight:900;margin-bottom:6px;">Exportar</div>', unsafe_allow_html=True)
+
+    if show_intro:
+        st.markdown(
+            '<div class="ts-muted">Aquí ves tu historial: puedes editarlo / borrarlo y exportarlo / importarlo en JSON.</div>',
+            unsafe_allow_html=True,
+        )
+
+    hist = st.session_state.history
+
+    # Historial visible
+    if not hist:
         st.info("Aún no hay partidos guardados.")
     else:
-        options = list(range(len(history.matches)))
-        labels = [fmt_match_line(history.matches[i]) for i in options]
+        df_all = history_df(hist)
+        st.dataframe(df_all, use_container_width=True, hide_index=True)
 
-        idx = st.selectbox(
-            "Historial (selecciona un partido)",
-            options=options,
-            format_func=lambda i: labels[i],
-            index=options[-1] if st.session_state.history_selected_idx is None else st.session_state.history_selected_idx,
-        )
-        st.session_state.history_selected_idx = idx
-        m = deepcopy(history.matches[idx])
+        # Editar / borrar
+        ids = [m["id"] for m in hist]
+        sel = st.selectbox("Selecciona partido para editar/borrar", ids, index=0)
+        m = next((x for x in hist if x["id"] == sel), None)
 
-        with st.expander("✏️ Editar partido seleccionado", expanded=False):
-            c1, c2 = st.columns(2)
-            with c1:
-                m["won_match"] = st.checkbox("¿Victoria?", value=bool(m.get("won_match")))
-                m["sets_w"] = int(st.number_input("Sets Yo", min_value=0, step=1, value=int(m.get("sets_w", 0))))
-                m["games_w"] = int(st.number_input("Juegos Yo", min_value=0, step=1, value=int(m.get("games_w", 0))))
-            with c2:
-                m["sets_l"] = int(st.number_input("Sets Rival", min_value=0, step=1, value=int(m.get("sets_l", 0))))
-                m["games_l"] = int(st.number_input("Juegos Rival", min_value=0, step=1, value=int(m.get("games_l", 0))))
-                m["surface"] = st.selectbox(
-                    "Superficie",
-                    ["Tierra batida", "Pista rápida", "Hierba", "Indoor"],
-                    index=["Tierra batida", "Pista rápida", "Hierba", "Indoor"].index(m.get("surface", "Tierra batida")),
-                )
+        if m:
+            with st.expander("Editar partido", expanded=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    surface = st.selectbox("Superficie", SURFACES, index=SURFACES.index(m["surface"]), key=f"edit_surface_{sel}")
+                    sets_yo = st.number_input("Sets Yo", 0, 10, int(m["sets_yo"]), key=f"edit_sets_yo_{sel}")
+                    juegos_yo = st.number_input("Juegos Yo", 0, 50, int(m["juegos_yo"]), key=f"edit_juegos_yo_{sel}")
+                    puntos_yo = st.number_input("Puntos Yo", 0, 500, int(m["puntos_yo"]), key=f"edit_puntos_yo_{sel}")
+                with c2:
+                    sets_rival = st.number_input("Sets Rival", 0, 10, int(m["sets_rival"]), key=f"edit_sets_rival_{sel}")
+                    juegos_rival = st.number_input("Juegos Rival", 0, 50, int(m["juegos_rival"]), key=f"edit_juegos_rival_{sel}")
+                    puntos_rival = st.number_input("Puntos Rival", 0, 500, int(m["puntos_rival"]), key=f"edit_puntos_rival_{sel}")
 
-            auto = st.checkbox("Auto: victoria si sets yo > rival", value=True)
-            if auto:
-                m["won_match"] = (int(m.get("sets_w", 0)) > int(m.get("sets_l", 0)))
+                notes = st.text_area("Notas", value=m.get("notes", ""), key=f"edit_notes_{sel}")
 
-            b1, b2 = st.columns(2)
-            with b1:
-                if st.button("💾 Guardar cambios", use_container_width=True):
-                    history.update(idx, m)
-                    st.success("Cambios guardados ✅")
-                    st.rerun()
-            with b2:
-                if st.button("🗑️ Borrar partido", use_container_width=True):
-                    history.delete(idx)
-                    st.session_state.history_selected_idx = None
-                    st.success("Partido borrado ✅")
-                    st.rerun()
+                csave, cdel = st.columns([2, 1])
+                with csave:
+                    if st.button("💾 Guardar cambios", use_container_width=True, key=f"save_edit_{sel}"):
+                        # aplicar cambios
+                        m["surface"] = surface
+                        m["sets_yo"] = int(sets_yo)
+                        m["sets_rival"] = int(sets_rival)
+                        m["juegos_yo"] = int(juegos_yo)
+                        m["juegos_rival"] = int(juegos_rival)
+                        m["puntos_yo"] = int(puntos_yo)
+                        m["puntos_rival"] = int(puntos_rival)
+                        m["notes"] = notes
+                        st.success("Partido actualizado.")
+                        st.rerun()
+                with cdel:
+                    if st.button("🗑️ Borrar", use_container_width=True, key=f"del_{sel}"):
+                        st.session_state.history = [x for x in st.session_state.history if x["id"] != sel]
+                        st.warning("Partido borrado.")
+                        st.rerun()
 
-    export_payload = {"matches": history.matches}
-    export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
+    st.write("")
+
+    # Descargar JSON
+    payload = json.dumps(st.session_state.history, ensure_ascii=False, indent=2)
     st.download_button(
         "⬇️ Descargar historial (JSON)",
-        data=export_bytes,
+        data=payload.encode("utf-8"),
         file_name="tennis_history.json",
         mime="application/json",
         use_container_width=True,
     )
 
-    up = st.file_uploader("Importar historial (JSON)", type=["json"])
+    # Importar JSON
+    st.markdown('<div class="small-note" style="margin-top:8px;">Importar historial (JSON)</div>', unsafe_allow_html=True)
+    up = st.file_uploader(" ", type=["json"], label_visibility="collapsed")
     if up is not None:
         try:
-            payload = json.loads(up.read().decode("utf-8"))
-            new_matches = payload.get("matches", [])
-            if isinstance(new_matches, list):
-                history.matches = new_matches
-                st.success(f"Importado ✅ ({len(new_matches)} partidos)")
+            raw = up.read().decode("utf-8")
+            loaded = json.loads(raw)
+            if isinstance(loaded, list):
+                # muy simple: reemplaza el historial
+                st.session_state.history = loaded
+                st.success("Historial importado correctamente.")
                 st.rerun()
             else:
-                st.error("El JSON no tiene el formato correcto (se esperaba clave 'matches' con una lista).")
+                st.error("El JSON no parece una lista de partidos.")
         except Exception as e:
-            st.error(f"No se pudo leer el JSON: {e}")
+            st.error(f"Error al importar JSON: {e}")
 
-
-# ==========================================================
-# PANTALLAS
-# ==========================================================
-def screen_home():
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown("## 🎾 TennisStats")
-    st.caption("Elige qué pantalla quieres abrir:")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown('<div class="big-btn">', unsafe_allow_html=True)
-    if st.button("🏟️ LIVE MATCH", key="home_live"):
-        go("LIVE")
-    if st.button("📈 ANALYSIS", key="home_analysis"):
-        go("ANALYSIS")
-    if st.button("📊 STATS", key="home_stats"):
-        go("STATS")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def screen_live():
-    top_bar("🏟️ LIVE MATCH")
+# =========================
+# Router
+# =========================
+page = st.session_state.page
 
-    total, won, pct = live.points_stats()
-
-    colA, colB = st.columns([1.25, 1])
-    with colA:
-        live.surface = st.selectbox(
-            "Superficie",
-            ["Tierra batida", "Pista rápida", "Hierba", "Indoor"],
-            index=["Tierra batida", "Pista rápida", "Hierba", "Indoor"].index(live.surface),
-        )
-    with colB:
-        st.markdown(f"**Puntos:** {total} · **% ganados:** {pct:.1f}%")
-
-    st.divider()
-
-    st.header("Marcador")
-    st_ = live.state
-    pts_label = f"TB {st_.pts_me}-{st_.pts_opp}" if st_.in_tiebreak else game_point_label(st_.pts_me, st_.pts_opp)
-    st.write(f"**Sets {st_.sets_me}-{st_.sets_opp} · Juegos {st_.games_me}-{st_.games_opp} · Puntos {pts_label}**")
-
-    p_point = live.estimate_point_win_prob()
-    p_match = live.match_win_prob() * 100.0
-    st.caption(f"Modelo: p(punto)≈{p_point:.2f}  ·  Win Prob≈{p_match:.1f}%")
-
-    st.divider()
-
-    st.header("Punto")
-
-    with st.expander("Finish (opcional)", expanded=False):
-        st.caption("Selecciona 1 (se aplica al siguiente punto). Puedes deseleccionar tocando de nuevo.")
-        cols = st.columns(2)
-        for i, (k, label) in enumerate(FINISH_ITEMS):
-            with cols[i % 2]:
-                is_on = (st.session_state.finish_selected == k)
-                if st.button(("✅ " if is_on else "") + label, key=f"fin_{k}", use_container_width=True):
-                    st.session_state.finish_selected = None if is_on else k
-                    st.rerun()
-        if st.button("Limpiar finish", use_container_width=False):
-            st.session_state.finish_selected = None
-            st.rerun()
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🟩 Punto Yo", use_container_width=True):
-            live.add_point("win", {"finish": st.session_state.finish_selected})
-            st.session_state.finish_selected = None
-            st.rerun()
-    with c2:
-        if st.button("🟥 Punto Rival", use_container_width=True):
-            live.add_point("lose", {"finish": st.session_state.finish_selected})
-            st.session_state.finish_selected = None
-            st.rerun()
-
-    with st.expander("Acciones manuales (+Juego / +Set)", expanded=False):
-        g1, g2 = st.columns(2)
-        with g1:
-            if st.button("➕ Juego Yo", use_container_width=True):
-                live.add_game_manual("me")
-                st.rerun()
-            if st.button("➕ Set Yo", use_container_width=True):
-                live.add_set_manual("me")
-                st.rerun()
-        with g2:
-            if st.button("➕ Juego Rival", use_container_width=True):
-                live.add_game_manual("opp")
-                st.rerun()
-            if st.button("➕ Set Rival", use_container_width=True):
-                live.add_set_manual("opp")
-                st.rerun()
-
-    st.divider()
-
-    st.header("Acciones")
-    a1, a2, a3 = st.columns(3)
-    with a1:
-        if st.button("↩️ Deshacer", use_container_width=True):
-            live.undo()
-            st.rerun()
-    with a2:
-        if st.button("🏁 Finalizar", use_container_width=True):
-            st.session_state["_open_finish_modal"] = True
-            st.rerun()
-    with a3:
-        if st.button("🧹 Reset live", use_container_width=True):
-            live.reset()
-            st.rerun()
-
-    if st.session_state.get("_open_finish_modal"):
-        st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-        st.markdown("### Finalizar partido")
-        st.caption("Guarda el resultado en el historial.")
-        sw = st.number_input("Sets Yo", min_value=0, step=1, value=int(live.state.sets_me))
-        sl = st.number_input("Sets Rival", min_value=0, step=1, value=int(live.state.sets_opp))
-        gw = st.number_input("Juegos Yo", min_value=0, step=1, value=int(live.state.games_me))
-        gl = st.number_input("Juegos Rival", min_value=0, step=1, value=int(live.state.games_opp))
-        srf = st.selectbox(
-            "Superficie (guardar)",
-            ["Tierra batida", "Pista rápida", "Hierba", "Indoor"],
-            index=["Tierra batida", "Pista rápida", "Hierba", "Indoor"].index(live.surface),
-        )
-        b1, b2 = st.columns(2)
-        with b1:
-            if st.button("Cancelar", use_container_width=True):
-                st.session_state["_open_finish_modal"] = False
-                st.rerun()
-        with b2:
-            if st.button("Guardar partido", use_container_width=True):
-                won_match = sw > sl
-                report = live.match_summary()
-                history.add(
-                    {
-                        "date": datetime.now().isoformat(timespec="seconds"),
-                        "won_match": won_match,
-                        "sets_w": int(sw),
-                        "sets_l": int(sl),
-                        "games_w": int(gw),
-                        "games_l": int(gl),
-                        "surface": srf,
-                        **report,
-                    }
-                )
-                live.surface = srf
-                live.reset()
-                st.session_state["_open_finish_modal"] = False
-                st.success("Partido guardado ✅")
-                st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.divider()
-    export_block()
-
-
-def screen_analysis():
-    top_bar("📈 ANALYSIS")
-
-    p_point = live.estimate_point_win_prob()
-    p_match = live.match_win_prob() * 100.0
-
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown("### Win Probability (modelo real)")
-    st.write(f"**p(punto)≈{p_point:.2f} · Win Prob≈{p_match:.1f}%**")
-    st.caption("Modelo: Markov (punto→juego→set→BO3). p(punto) se estima con tus puntos del partido.")
-    probs = live.win_prob_series()
-    if len(probs) < 2:
-        st.info("Aún no hay suficientes puntos para dibujar la gráfica (mínimo 2).")
-    else:
-        st.line_chart(probs, height=260)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    total = sum(1 for p in live.points if p.get("pressure"))
-    won = sum(1 for p in live.points if p.get("pressure") and p["result"] == "win")
-    pct = (won / total * 100.0) if total else 0.0
-
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown("### Puntos de presión (live)")
-    st.write(f"**{won}/{total}** ganados (**{pct:.0f}%**) en deuce/tiebreak.")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def screen_stats():
-    top_bar("📊 STATS")
-
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown("### Filtros")
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        n = st.selectbox("Partidos", ["Últ. 10", "Últ. 30", "Todos"], index=0)
-        filter_n = 10 if n == "Últ. 10" else 30 if n == "Últ. 30" else None
-    with c2:
-        filter_surface = st.selectbox("Superficie", ["Todas", "Tierra batida", "Pista rápida", "Hierba", "Indoor"], index=0)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    agg = history.aggregate(n=filter_n, surface=filter_surface)
-
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown("### Resumen")
-    st.write(
-        f"**Partidos:** {agg['matches_win']}/{agg['matches_total']} ({agg['matches_pct']:.0f}%)  ·  "
-        f"**Sets:** {agg['sets_w']}/{agg['sets_w'] + agg['sets_l']} ({agg['sets_pct']:.0f}%)  ·  "
-        f"**Juegos:** {agg['games_w']}/{agg['games_w'] + agg['games_l']} ({agg['games_pct']:.0f}%)"
-    )
-    st.caption(
-        f"Puntos: {agg['points_won']}/{agg['points_total']} ({agg['points_pct']:.0f}%)  ·  "
-        f"Presión: {agg['pressure_won']}/{agg['pressure_total']} ({agg['pressure_pct']:.0f}%)"
-    )
-    fin = agg["finishes_sum"]
-    st.caption(
-        f"Winners {fin['winner']} · ENF {fin['unforced']} · EF {fin['forced']} · "
-        f"Aces {fin['ace']} · Dobles faltas {fin['double_fault']}"
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown("### Racha")
-    results = history.last_n_results(10, surface=(None if filter_surface == "Todas" else filter_surface))
-    if not results:
-        st.info("Aún no hay partidos guardados.")
-    else:
-        st.write("Últimos 10: " + "  ".join(results))
-    best = history.best_streak(surface=(None if filter_surface == "Todas" else filter_surface))
-    st.write(f"Mejor racha: **{best}** victorias seguidas")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    order = ["Tierra batida", "Pista rápida", "Hierba", "Indoor"]
-    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
-    st.markdown("### Superficies")
-    rows = []
-    for srf in order:
-        w = agg["surfaces"].get(srf, {}).get("w", 0)
-        t = agg["surfaces"].get(srf, {}).get("t", 0)
-        pct_ = (w / t * 100.0) if t else 0.0
-        rows.append({"Superficie": srf, "Victorias": w, "Total": t, "%": round(pct_, 0)})
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# ==========================================================
-# ROUTER
-# ==========================================================
-if st.session_state.nav == "HOME":
-    screen_home()
-elif st.session_state.nav == "LIVE":
-    screen_live()
-elif st.session_state.nav == "ANALYSIS":
-    screen_analysis()
+if page == "HOME":
+    page_home()
+elif page == "LIVE":
+    page_live()
+elif page == "ANALYSIS":
+    page_analysis()
+elif page == "STATS":
+    page_stats()
 else:
-    screen_stats()
+    # fallback
+    st.session_state.page = "HOME"
+    st.rerun()
