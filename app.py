@@ -30,30 +30,32 @@ div[data-baseweb="input"] input {padding-top: 0.45rem; padding-bottom: 0.45rem;}
 .badge {display: inline-block; padding: 0.2rem 0.55rem; border-radius: 999px; background: #f1f3f5; margin-right: .35rem; margin-bottom: .35rem;}
 hr {margin: 0.55rem 0;}
 
-/* ======================================================
-   FIX: Tabs (LIVE / Analysis / Stats) invisibles en móvil
-   ====================================================== */
-div[data-baseweb="tab-list"] {
-  gap: 0.4rem !important;
-  padding-bottom: 0.2rem !important;
+/* ============================
+   NAV en "casillas" (tarjetas)
+   ============================ */
+.nav-wrap {margin: 0.35rem 0 0.65rem 0;}
+.nav-title {font-weight: 800; margin-bottom: 0.3rem;}
+.nav-chip {font-size: 0.85rem; color: rgba(0,0,0,.55); margin-bottom: 0.55rem;}
+/* Hacemos que los botones parezcan tarjetas */
+div[data-testid="column"] .nav-card button{
+  width: 100% !important;
+  border-radius: 16px !important;
+  padding: 0.85rem 0.9rem !important;
+  font-weight: 900 !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+  background: #ffffff !important;
 }
-div[data-baseweb="tab"] button {
-  color: #111 !important;
-  font-weight: 800 !important;
-  font-size: 1.02rem !important;
-  background: #f3f4f6 !important;
-  border-radius: 999px !important;
-  padding: 0.42rem 0.75rem !important;
-  border: 1px solid rgba(0,0,0,0.08) !important;
+div[data-testid="column"] .nav-card button:hover{
+  border-color: rgba(0,0,0,0.22) !important;
 }
-div[data-baseweb="tab"][aria-selected="true"] button {
+div[data-testid="column"] .nav-card.selected button{
   background: #111 !important;
   color: #fff !important;
   border-color: #111 !important;
 }
-div[data-baseweb="tab-highlight"] {
-  background: transparent !important; /* evita subrayado raro */
-}
+
+/* Compacta subheaders */
+h2, h3 {margin-top: 0.35rem !important;}
 </style>
 """
 st.markdown(COMPACT_CSS, unsafe_allow_html=True)
@@ -242,7 +244,13 @@ class LiveMatch:
         p = self.estimate_point_win_prob()
         p_r = round(p, 3)
         st_ = self.state
-        return _prob_match_bo3(p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak)
+        return _prob_match_bo3(
+            p_r,
+            st_.sets_me, st_.sets_opp,
+            st_.games_me, st_.games_opp,
+            st_.pts_me, st_.pts_opp,
+            st_.in_tiebreak
+        )
 
     def win_prob_series(self):
         probs = []
@@ -490,6 +498,9 @@ def ss_init():
         st.session_state.history = MatchHistory()
     if "finish" not in st.session_state:
         st.session_state.finish = None
+    # NUEVO: página seleccionada (para sustituir tabs)
+    if "page" not in st.session_state:
+        st.session_state.page = "LIVE"
 
 
 ss_init()
@@ -517,14 +528,39 @@ def title_h(txt: str):
 
 
 # ==========================================================
-# NAV (TABS)
+# NAV (CASILLAS clicables - NO ARRIBA)
 # ==========================================================
-tabs = st.tabs(["🎾 LIVE", "📈 Analysis", "📊 Stats"])
+def nav_boxes():
+    st.markdown("<div class='nav-wrap'>", unsafe_allow_html=True)
+    st.markdown("<div class='nav-title'>Páginas</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nav-chip'>Clica una casilla para cambiar</div>", unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3, gap="small")
+
+    def nav_btn(col, key_page: str, label: str):
+        cls = "nav-card selected" if st.session_state.page == key_page else "nav-card"
+        with col:
+            st.markdown(f"<div class='{cls}'>", unsafe_allow_html=True)
+            if st.button(label, use_container_width=True, key=f"nav_{key_page}"):
+                st.session_state.page = key_page
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    nav_btn(c1, "LIVE", "🎾 LIVE")
+    nav_btn(c2, "ANALYSIS", "📈 Analysis")
+    nav_btn(c3, "STATS", "📊 Stats")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+nav_boxes()
+st.divider()
+
 
 # ==========================================================
-# TAB 1: LIVE
+# PÁGINA: LIVE
 # ==========================================================
-with tabs[0]:
+def render_live():
     title_h("LIVE MATCH")
 
     colA, colB = st.columns([1.15, 1.0], gap="small")
@@ -753,9 +789,9 @@ with tabs[0]:
 
 
 # ==========================================================
-# TAB 2: ANALYSIS
+# PÁGINA: ANALYSIS
 # ==========================================================
-with tabs[1]:
+def render_analysis():
     title_h("Analysis")
 
     p_point = live.estimate_point_win_prob()
@@ -779,9 +815,9 @@ with tabs[1]:
 
 
 # ==========================================================
-# TAB 3: STATS
+# PÁGINA: STATS
 # ==========================================================
-with tabs[2]:
+def render_stats():
     title_h("Stats")
 
     colF1, colF2 = st.columns([1.1, 0.9], gap="small")
@@ -840,3 +876,17 @@ with tabs[2]:
         t_ = surf.get(srf, {}).get("t", 0)
         pct = (w / t_ * 100.0) if t_ else 0.0
         st.write(f"**{srf}:** {pct:.0f}%  ({w} de {t_})")
+
+
+# ==========================================================
+# ROUTER (según casilla clicada)
+# ==========================================================
+if st.session_state.page == "LIVE":
+    render_live()
+elif st.session_state.page == "ANALYSIS":
+    render_analysis()
+elif st.session_state.page == "STATS":
+    render_stats()
+else:
+    st.session_state.page = "LIVE"
+    st.rerun()
