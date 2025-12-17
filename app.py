@@ -16,13 +16,12 @@ import streamlit as st
 st.set_page_config(page_title="TennisStats", page_icon="🎾", layout="centered")
 
 # ==========================================================
-# ESTILO (compacto + "título clicable" seguro)
+# ESTILO (compacto + botones grandes en HOME)
 # ==========================================================
 st.markdown(
     """
 <style>
-/* Compacto general */
-.block-container {padding-top: 0.6rem; padding-bottom: 2.2rem;}
+.block-container {padding-top: 0.8rem; padding-bottom: 2.2rem;}
 div[data-testid="stVerticalBlock"] > div {gap: 0.55rem;}
 hr {margin: 0.6rem 0 !important;}
 h1,h2,h3 {margin: 0.15rem 0 0.25rem 0 !important;}
@@ -31,7 +30,6 @@ div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
   .block-container {padding-left: 0.85rem; padding-right: 0.85rem;}
 }
 
-/* Tarjetas */
 .ts-card{
   border: 1px solid rgba(0,0,0,0.07);
   border-radius: 16px;
@@ -39,31 +37,14 @@ div[data-testid="stWidget"] {margin-bottom: 0.25rem;}
   box-shadow: 0 8px 22px rgba(0,0,0,0.06);
   background: white;
 }
-.ts-card h3{margin:0 0 6px 0 !important;}
 .ts-muted{color: rgba(0,0,0,0.55);}
 
-/* Botón que parece título (sin depender de JS) */
-.ts-title-btn button{
-  border: none !important;
-  background: transparent !important;
-  padding: 0 !important;
-  margin: 0 !important;
-  box-shadow: none !important;
-  text-align: left !important;
-}
-.ts-title-btn button *{
-  font-size: 44px !important;
+.big-btn button{
+  width: 100% !important;
+  padding: 18px 16px !important;
+  font-size: 18px !important;
   font-weight: 800 !important;
-  line-height: 1.02 !important;
-}
-@media (max-width: 480px){
-  .ts-title-btn button *{font-size: 36px !important;}
-}
-
-.ts-nav-hint{
-  font-size: 12px;
-  color: rgba(0,0,0,0.55);
-  margin-top: -6px;
+  border-radius: 16px !important;
 }
 </style>
 """,
@@ -248,7 +229,9 @@ class LiveMatch:
         p = self.estimate_point_win_prob()
         p_r = round(p, 3)
         st_ = self.state
-        return _prob_match_bo3(p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak)
+        return _prob_match_bo3(
+            p_r, st_.sets_me, st_.sets_opp, st_.games_me, st_.games_opp, st_.pts_me, st_.pts_opp, st_.in_tiebreak
+        )
 
     def win_prob_series(self) -> List[float]:
         probs: List[float] = []
@@ -299,7 +282,6 @@ class LiveMatch:
 
     def add_point(self, result: str, meta: dict):
         self.snapshot()
-
         before = deepcopy(self.state)
         set_idx = before.sets_me + before.sets_opp + 1
         is_pressure = bool(before.in_tiebreak or (before.pts_me >= 3 and before.pts_opp >= 3))
@@ -486,25 +468,6 @@ class MatchHistory:
 # ==========================================================
 # SESSION STATE
 # ==========================================================
-def _ensure_state():
-    if "live" not in st.session_state:
-        st.session_state.live = LiveMatch()
-    if "history" not in st.session_state:
-        st.session_state.history = MatchHistory()
-    if "finish_selected" not in st.session_state:
-        st.session_state.finish_selected = None
-    if "nav" not in st.session_state:
-        st.session_state.nav = "LIVE"
-    if "history_selected_idx" not in st.session_state:
-        st.session_state.history_selected_idx = None
-    if "nav_picker_open" not in st.session_state:
-        st.session_state.nav_picker_open = False
-
-
-_ensure_state()
-live: LiveMatch = st.session_state.live
-history: MatchHistory = st.session_state.history
-
 FINISH_ITEMS = [
     ("winner", "Winner"),
     ("unforced", "ENF"),
@@ -515,57 +478,37 @@ FINISH_ITEMS = [
     ("opp_winner", "Winner rival"),
 ]
 
-NAV_CHOICES = {
-    "LIVE": "LIVE MATCH",
-    "ANALYSIS": "ANALYSIS",
-    "STATS": "STATS",
-}
+
+def _ensure_state():
+    if "live" not in st.session_state:
+        st.session_state.live = LiveMatch()
+    if "history" not in st.session_state:
+        st.session_state.history = MatchHistory()
+    if "finish_selected" not in st.session_state:
+        st.session_state.finish_selected = None
+    if "nav" not in st.session_state:
+        st.session_state.nav = "HOME"
+    if "history_selected_idx" not in st.session_state:
+        st.session_state.history_selected_idx = None
 
 
-def set_nav(new_nav: str):
-    if new_nav != st.session_state.nav:
-        st.session_state.nav = new_nav
-        st.session_state.nav_picker_open = False
-        st.rerun()
+_ensure_state()
+live: LiveMatch = st.session_state.live
+history: MatchHistory = st.session_state.history
 
 
-def header_click_title():
-    """
-    TÍTULO SIEMPRE VISIBLE.
-    Al clicar el título, aparece un desplegable debajo para cambiar de página.
-    """
-    title = NAV_CHOICES.get(st.session_state.nav, "LIVE MATCH")
+def go(page: str):
+    st.session_state.nav = page
+    st.rerun()
 
-    # Contenedor para poder aplicar clase CSS estable al botón-título
-    with st.container():
-        st.markdown('<div class="ts-title-btn">', unsafe_allow_html=True)
-        if st.button(title, key="__title_click__", type="secondary"):
-            st.session_state.nav_picker_open = not st.session_state.nav_picker_open
-            st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="ts-nav-hint">Toca el título para cambiar de pantalla</div>', unsafe_allow_html=True)
-
-    if st.session_state.nav_picker_open:
-        # Menú desplegable “real” (selectbox) que aparece SOLO tras clicar el título
-        current = st.session_state.nav
-        inv = {v: k for k, v in NAV_CHOICES.items()}
-        labels = [NAV_CHOICES["LIVE"], NAV_CHOICES["ANALYSIS"], NAV_CHOICES["STATS"]]
-        cur_label = NAV_CHOICES[current]
-
-        choice = st.selectbox(
-            "Cambiar a…",
-            options=labels,
-            index=labels.index(cur_label),
-            key="__nav_selectbox__",
-        )
-        new_nav = inv[choice]
-        if new_nav != current:
-            set_nav(new_nav)
-
-        if st.button("Cerrar menú", use_container_width=True):
-            st.session_state.nav_picker_open = False
-            st.rerun()
+def top_bar(title: str):
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.subheader(title)
+    with c2:
+        if st.button("⬅️ Volver al inicio", use_container_width=True):
+            go("HOME")
 
 
 def fmt_match_line(m: Dict[str, Any]) -> str:
@@ -579,7 +522,7 @@ def fmt_match_line(m: Dict[str, Any]) -> str:
     return f"{w} · {m.get('sets_w',0)}-{m.get('sets_l',0)} sets · {m.get('games_w',0)}-{m.get('games_l',0)} juegos · {srf} · {dt}"
 
 
-def screen_export_block():
+def export_block():
     st.header("Exportar")
     st.caption("Aquí ves tu historial: puedes **editarlo / borrarlo** y **exportarlo / importarlo** en JSON.")
 
@@ -630,9 +573,6 @@ def screen_export_block():
                     st.success("Partido borrado ✅")
                     st.rerun()
 
-        with st.expander("📄 Detalle (solo lectura)", expanded=False):
-            st.json(history.matches[idx])
-
     export_payload = {"matches": history.matches}
     export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
     st.download_button(
@@ -658,8 +598,27 @@ def screen_export_block():
             st.error(f"No se pudo leer el JSON: {e}")
 
 
+# ==========================================================
+# PANTALLAS
+# ==========================================================
+def screen_home():
+    st.markdown('<div class="ts-card">', unsafe_allow_html=True)
+    st.markdown("## 🎾 TennisStats")
+    st.caption("Elige qué pantalla quieres abrir:")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="big-btn">', unsafe_allow_html=True)
+    if st.button("🏟️ LIVE MATCH", key="home_live"):
+        go("LIVE")
+    if st.button("📈 ANALYSIS", key="home_analysis"):
+        go("ANALYSIS")
+    if st.button("📊 STATS", key="home_stats"):
+        go("STATS")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def screen_live():
-    header_click_title()
+    top_bar("🏟️ LIVE MATCH")
 
     total, won, pct = live.points_stats()
 
@@ -671,7 +630,7 @@ def screen_live():
             index=["Tierra batida", "Pista rápida", "Hierba", "Indoor"].index(live.surface),
         )
     with colB:
-        st.markdown(f"**Puntos:** {total} · **% ganados:** {pct:.1f}%", unsafe_allow_html=False)
+        st.markdown(f"**Puntos:** {total} · **% ganados:** {pct:.1f}%")
 
     st.divider()
 
@@ -789,11 +748,11 @@ def screen_live():
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
-    screen_export_block()
+    export_block()
 
 
 def screen_analysis():
-    header_click_title()
+    top_bar("📈 ANALYSIS")
 
     p_point = live.estimate_point_win_prob()
     p_match = live.match_win_prob() * 100.0
@@ -820,7 +779,7 @@ def screen_analysis():
 
 
 def screen_stats():
-    header_click_title()
+    top_bar("📊 STATS")
 
     st.markdown('<div class="ts-card">', unsafe_allow_html=True)
     st.markdown("### Filtros")
@@ -879,7 +838,9 @@ def screen_stats():
 # ==========================================================
 # ROUTER
 # ==========================================================
-if st.session_state.nav == "LIVE":
+if st.session_state.nav == "HOME":
+    screen_home()
+elif st.session_state.nav == "LIVE":
     screen_live()
 elif st.session_state.nav == "ANALYSIS":
     screen_analysis()
