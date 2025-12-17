@@ -114,6 +114,7 @@ def load_history_from_disk(user_key: str) -> list:
 
 
 def save_history_to_disk(user_key: str, matches: list) -> None:
+    ensure_dirs()
     path = history_path_for(user_key)
     payload = {"matches": matches}
     with open(path, "w", encoding="utf-8") as f:
@@ -541,10 +542,9 @@ class MatchHistory:
 
 
 # ==========================================================
-# NUEVO: Resumen tipo entrenador (basado en estadísticas)
+# Resumen tipo entrenador (basado en stats)
 # ==========================================================
 def coach_summary_from_match(m: dict) -> str:
-    """Genera un resumen tipo entrenador usando SOLO stats del partido guardado."""
     won = bool(m.get("won_match"))
     res = "Victoria" if won else "Derrota"
 
@@ -563,13 +563,10 @@ def coach_summary_from_match(m: dict) -> str:
     aces = int(fin.get("ace", 0) or 0)
     df = int(fin.get("double_fault", 0) or 0)
     opp_err = int(fin.get("opp_error", 0) or 0)
-    opp_w = int(fin.get("opp_winner", 0) or 0)
 
-    # Heurísticas simples (legibles)
     strengths = []
     focus = []
 
-    # Eficiencia puntos
     if pts_pct >= 55:
         strengths.append(f"dominaste el intercambio de puntos ({pts_pct:.0f}%).")
     elif pts_pct <= 45 and pts_total >= 10:
@@ -577,7 +574,6 @@ def coach_summary_from_match(m: dict) -> str:
     else:
         strengths.append(f"tu % de puntos estuvo equilibrado ({pts_pct:.0f}%).")
 
-    # Presión
     if pressure_total >= 6:
         if pressure_pct >= 55:
             strengths.append(f"gestionaste muy bien la presión ({pressure_won}/{pressure_total}, {pressure_pct:.0f}%).")
@@ -590,7 +586,6 @@ def coach_summary_from_match(m: dict) -> str:
     else:
         strengths.append("hubo pocos puntos de presión registrados.")
 
-    # Winners vs errores
     if winners >= max(5, enf + 2):
         strengths.append("generaste muchos winners y fuiste ofensivo cuando tocaba.")
     if enf >= max(5, winners + 2):
@@ -600,13 +595,11 @@ def coach_summary_from_match(m: dict) -> str:
     if aces >= 3:
         strengths.append("el saque fue un arma (aces).")
 
-    # Balance global
     if (enf + df) > (winners + aces) and pts_total >= 15:
         focus.append("buscar más margen: altura/profundidad y seleccionar mejor el riesgo.")
     if opp_err >= 5 and winners < 3:
         strengths.append("sacaste puntos provocando error del rival: buena consistencia.")
 
-    # Plan de 3 claves
     plan = []
     if "reducir errores no forzados (ENF) en momentos clave." in focus:
         plan.append("1) Prioriza 2-3 pelotas de seguridad antes de acelerar (evita el 'todo o nada').")
@@ -623,7 +616,6 @@ def coach_summary_from_match(m: dict) -> str:
     else:
         plan.append("3) Ajusta el saque según rival: alterna direcciones y busca el primer golpe tras el saque.")
 
-    # Texto final
     s_txt = " ".join(strengths) if strengths else "buen partido en líneas generales."
     f_txt = " ".join(focus) if focus else "pocos puntos débiles claros: sigue consolidando lo que funcionó."
 
@@ -635,7 +627,7 @@ def coach_summary_from_match(m: dict) -> str:
         f"{plan[0]}\n{plan[1]}\n{plan[2]}\n\n"
         f"**Datos rápidos:** Puntos {pts_won}/{pts_total} ({pts_pct:.0f}%) · "
         f"Presión {pressure_won}/{pressure_total} ({pressure_pct:.0f}%) · "
-        f"Winners {winners} · ENF {enf} · EF {ef} · Ace {aces} · DF {df}"
+        f"Winners {winners} · ENF {enf} · EF {ef} · Ace {aces} · DF {df} · ErrRival {opp_err}"
     )
 
 
@@ -897,7 +889,9 @@ if st.session_state.page == "LIVE":
             sl = st.number_input("Sets Rival", 0, 5, value=int(live.state.sets_opp), step=1)
             gw = st.number_input("Juegos Yo", 0, 50, value=int(live.state.games_me), step=1)
             gl = st.number_input("Juegos Rival", 0, 50, value=int(live.state.games_opp), step=1)
-            surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURACES.index(live.surface))
+
+            # ✅ ARREGLO ÚNICO: SURACES -> SURFACES
+            surf_save = st.selectbox("Superficie (guardar)", SURFACES, index=SURFACES.index(live.surface))
 
             s_left, s_right = st.columns(2, gap="small")
             with s_left:
@@ -953,7 +947,6 @@ if st.session_state.page == "LIVE":
                 fin_line = f"Winners {fin.get('winner',0)} · ENF {fin.get('unforced',0)} · EF {fin.get('forced',0)} · Ace {fin.get('ace',0)} · DF {fin.get('double_fault',0)}"
                 small_note(fin_line)
 
-                # NUEVO: botón resumen entrenador (por partido)
                 if st.button("🧠 Resumen tipo entrenador", key=f"coach_{m.get('id',real_i)}", use_container_width=True):
                     st.session_state._coach_open = True
                     st.session_state._coach_text = coach_summary_from_match(m)
@@ -972,7 +965,6 @@ if st.session_state.page == "LIVE":
                         st.success("Partido borrado.")
                         st.rerun()
 
-        # NUEVO: panel resumen entrenador
         if st.session_state.get("_coach_open", False):
             with st.expander("🧠 Resumen del entrenador", expanded=True):
                 st.markdown(st.session_state.get("_coach_text", ""))
@@ -1132,9 +1124,8 @@ else:
     st.divider()
 
     st.subheader("Superficies", anchor=False)
-    order = list(SURFACES)
     surf = agg["surfaces"]
-    for srf in order:
+    for srf in SURFACES:
         w = surf.get(srf, {}).get("w", 0)
         t_ = surf.get(srf, {}).get("t", 0)
         pct = (w / t_ * 100.0) if t_ else 0.0
