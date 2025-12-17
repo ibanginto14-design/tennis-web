@@ -6,8 +6,6 @@ import secrets
 import hashlib
 import urllib.request
 import xml.etree.ElementTree as ET
-import zipfile
-import mimetypes
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import datetime
@@ -183,10 +181,7 @@ def fetch_tennis_news(max_items: int = 15):
                 for entry in root.findall("a:entry", ns):
                     title = _first_text(entry, ["{http://www.w3.org/2005/Atom}title"])
                     link = _attr(entry, "{http://www.w3.org/2005/Atom}link", "href")
-                    pub = _first_text(
-                        entry,
-                        ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"],
-                    )
+                    pub = _first_text(entry, ["{http://www.w3.org/2005/Atom}updated", "{http://www.w3.org/2005/Atom}published"])
                     if title and link:
                         items.append(
                             {"source": source_name, "title": title, "link": link, "published": pub}
@@ -206,49 +201,27 @@ def fetch_tennis_news(max_items: int = 15):
 
 
 # ==========================================================
-# PSICO (ZIP)
+# PSICO (PDFs)
 # ==========================================================
-# Pon aquí el ZIP en tu repo de Streamlit. Ejemplo: "psico.zip" en la raíz.
-PSICO_ZIP_PATH = "psico.zip"
+PSICO_DIR = "psico_pdfs"
+PSICO_PDFS = [
+    "PINTER CURSO 25-26 - DiÃ¡logo interno.pdf",
+    "PINTER CURSO 25-26 - Deporte y drogas.pdf",
+    "PINTER CURSO 25-26 - Control de la activaciÃ³n.pdf",
+]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def psico_list_files(zip_path: str):
-    if not os.path.exists(zip_path):
-        return []
-    files = []
-    try:
-        with zipfile.ZipFile(zip_path, "r") as z:
-            for info in z.infolist():
-                if info.is_dir():
-                    continue
-                name = info.filename
-                size = int(info.file_size or 0)
-                ext = os.path.splitext(name)[1].lower()
-                files.append({"name": name, "size": size, "ext": ext})
-    except Exception:
-        return []
-    # ordena por ruta/nombre
-    files.sort(key=lambda x: x["name"].lower())
-    return files
-
-
-def psico_read_file(zip_path: str, inner_name: str) -> bytes:
-    with zipfile.ZipFile(zip_path, "r") as z:
-        with z.open(inner_name, "r") as f:
-            return f.read()
-
-
-def _human_size(n: int) -> str:
-    try:
-        n = int(n)
-    except Exception:
-        return "—"
-    if n < 1024:
-        return f"{n} B"
-    if n < 1024**2:
-        return f"{n/1024:.1f} KB"
-    return f"{n/1024**2:.1f} MB"
+def _pdf_to_iframe_bytes(pdf_bytes: bytes, height: int = 650) -> None:
+    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    html = f"""
+    <iframe
+        src="data:application/pdf;base64,{b64}"
+        width="100%"
+        height="{height}"
+        style="border:0; border-radius: 10px;"
+    ></iframe>
+    """
+    st.components.v1.html(html, height=height + 20, scrolling=True)
 
 
 # ==========================================================
@@ -1300,68 +1273,34 @@ elif st.session_state.page == "NEWS":
 # ==========================================================
 else:
     title_h("Psico")
-    small_note("Material desde un ZIP (descarga/preview). Sube el ZIP al repo y ajusta PSICO_ZIP_PATH si hace falta.")
+    small_note("Material en PDF (visible y descargable).")
 
-    if not os.path.exists(PSICO_ZIP_PATH):
-        st.warning(
-            f"No encuentro el ZIP en `PSICO_ZIP_PATH = {PSICO_ZIP_PATH}`.\n\n"
-            f"📌 Sube el archivo al repo (Streamlit Cloud) y pon aquí su ruta/nombre."
-        )
-        st.stop()
-
-    files = psico_list_files(PSICO_ZIP_PATH)
-    if not files:
-        st.info("El ZIP existe, pero no pude listar archivos (o está vacío).")
-        st.stop()
-
-    cL, cR = st.columns([1, 1], gap="small")
-    with cL:
-        q = st.text_input("Buscar", value="", placeholder="filtra por nombre...")
-    with cR:
-        ext_opts = sorted({f["ext"] for f in files if f.get("ext")})
-        ext = st.selectbox("Tipo", ["Todos", *ext_opts], index=0)
-
-    # filtra
-    view = files
-    if q.strip():
-        qq = q.strip().lower()
-        view = [f for f in view if qq in f["name"].lower()]
-    if ext != "Todos":
-        view = [f for f in view if f.get("ext") == ext]
-
+    base = os.path.join(os.getcwd(), PSICO_DIR)
     st.divider()
-    st.write(f"**Archivos:** {len(view)}")
 
-    # listado
-    for i, f in enumerate(view):
-        name = f["name"]
-        size = _human_size(f["size"])
-        mt = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    found_any = False
+    for fname in PSICO_PDFS:
+        fpath = os.path.join(base, fname)
+        if not os.path.exists(fpath):
+            continue
 
-        with st.expander(f"📄 {name}  ·  {size}", expanded=False):
-            # preview básico solo para texto/markdown
-            ext_ = (f.get("ext") or "").lower()
-            can_preview = ext_ in [".txt", ".md", ".markdown", ".csv", ".json", ".py", ".yaml", ".yml"]
-            if can_preview:
-                try:
-                    raw = psico_read_file(PSICO_ZIP_PATH, name)
-                    txt = raw.decode("utf-8", errors="replace")
-                    st.code(txt[:4000], language="text")
-                    if len(txt) > 4000:
-                        small_note("Preview recortado (solo primeros 4000 caracteres). Descarga para ver completo.")
-                except Exception:
-                    st.info("No pude previsualizar este archivo, pero puedes descargarlo.")
+        found_any = True
+        with open(fpath, "rb") as f:
+            pdf_bytes = f.read()
 
-            # descarga
-            try:
-                data = psico_read_file(PSICO_ZIP_PATH, name)
-                st.download_button(
-                    "⬇️ Descargar",
-                    data=data,
-                    file_name=os.path.basename(name),
-                    mime=mt,
-                    use_container_width=True,
-                    key=f"psico_dl_{i}_{hash(name)}",
-                )
-            except Exception as e:
-                st.error(f"No se pudo preparar descarga: {e}")
+        with st.expander(f"📄 {fname}", expanded=False):
+            st.download_button(
+                "⬇️ Descargar PDF",
+                data=pdf_bytes,
+                file_name=fname,
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"psico_dl_{fname}",
+            )
+            st.caption("Vista previa:")
+            _pdf_to_iframe_bytes(pdf_bytes, height=650)
+
+    if not found_any:
+        st.warning(
+            f"No encuentro los PDFs. Asegúrate de subirlos a la carpeta **{PSICO_DIR}/** junto al `app.py`."
+        )
